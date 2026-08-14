@@ -40,7 +40,7 @@ body {
 }
 
 .desktop-lyrics-line-main {
-    font-size: 18px;
+    font-size: calc(var(--desktop-lyrics-font-size, 22px) - 4px);
     line-height: 1.4;
     color: rgb(255 255 255 / 50%);
     text-align: center;
@@ -60,9 +60,9 @@ body {
 }
 
 .desktop-lyrics-line-active .desktop-lyrics-line-main {
-    font-size: 22px;
+    font-size: var(--desktop-lyrics-font-size, 22px);
     font-weight: 600;
-    color: #fff;
+    color: var(--desktop-lyrics-font-color, #fff);
 }
 
 .desktop-lyrics-empty {

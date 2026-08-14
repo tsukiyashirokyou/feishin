@@ -1,6 +1,19 @@
 import { SynchronizedLyrics } from '/@/shared/types/domain-types';
 import { PlayerStatus, PlayerType } from '/@/shared/types/types';
 
+// Low-frequency configuration pushed by the main window renderer (the settings
+// authority) through the main process to the desktop lyrics renderer. Only the
+// fields the desktop lyrics feature needs are sent — never the whole settings
+// store. `enabled` is the source of truth for open/close; `alwaysOnTop` is
+// applied by the main process at window creation and on change; `fontSize` and
+// `fontColor` are applied by the desktop lyrics renderer as CSS variables.
+export interface DesktopLyricsConfig {
+    alwaysOnTop: boolean;
+    enabled: boolean;
+    fontColor: string;
+    fontSize: number;
+}
+
 // Control intent sent by the desktop lyrics renderer's control bar. The main
 // process relays player controls to the main window's existing
 // `renderer-player-*` channels (handled by `useMainPlayerListener`) and handles
@@ -49,5 +62,6 @@ export interface DesktopLyricsState {
 }
 
 export interface DesktopLyricsWindowState {
+    locked: boolean;
     open: boolean;
 }

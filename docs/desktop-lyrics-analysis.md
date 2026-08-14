@@ -862,3 +862,255 @@ Desktop Lyrics → desktop-lyrics-control {type:'seek', timestamp}
 8. 移除整窗底色后歌词在亮色/复杂壁纸上的可读性（text-shadow 是否足够）。
 9. Linux 下 `setIgnoreMouseEvents(true, {forward:true})` 的 `forward` 被忽略，锁定后 hover 不触发（预期）。
 10. `react-icons/ri` 图标在桌面歌词独立 renderer（无 Mantine）下正常渲染、颜色为 `currentColor`（#fff）。
+
+### Phase 6B — Settings & Entry（设置、正式入口与外部解锁）
+
+本阶段把桌面歌词接入既有设置系统，提供正式开/关入口、字号/字体颜色/置顶设置、以及 Phase 6A 遗留的**外部解锁**入口，并解决锁定态窗口整窗穿透导致「无法从窗口内解锁」的问题。**明确不实现**（延后）：透明度、背景色、字体族、对齐、动画速度、窗口位置记忆、主题、逐字 karaoke 等高级项。
+
+#### 设置归属与形态（复用既有设置系统，零新增 store / 零新增页面系统）
+
+- **不新建设置页面系统**，把入口放在既有 `lyrics` 设置切片内：`LyricsSettingsSchema` 增加可选字段 `desktopLyrics`（`.optional()`），具体子 schema `DesktopLyricsSettingsSchema`（`src/renderer/store/settings.store.ts`）：
+  ```ts
+  const DesktopLyricsSettingsSchema = z.object({
+      alwaysOnTop: z.boolean(),
+      enabled: z.boolean(),
+      fontColor: z.string(),
+      fontSize: z.number(),
+  });
+  ```
+- **`.optional()` 而非 `.required()`**：旧 `store_settings` 导入无 `desktopLyrics` 字段也能通过 `ValidationSettingsStateSchema.safeParse`（向后兼容，无需迁移版本号）；具体默认值写在 `initialState.lyrics.desktopLyrics`（`{ alwaysOnTop: true, enabled: false, fontColor: '#ffffff', fontSize: 22 }`），经 lodash `mergeWith` 合并到导入态。
+- **`useDesktopLyricsSettings()` hook**（新增，紧随 `useLyricsSettings`）：`useSettingsStore(selector, shallow)` 读取 `lyrics.desktopLyrics`，对 `undefined`（未持久化的旧配置）回退到上述默认值，返回归一化的 `{ alwaysOnTop, enabled, fontColor, fontSize }`。这样 UI 与 config bridge 都不必处理「字段缺失」的边界。
+- **不建第二个设置 store / 不复制设置持久化**：沿用 `useSettingsStore`（`name:'store_settings'`，zustand persist 默认 localStorage），`enabled`/`fontSize`/`fontColor`/`alwaysOnTop` 全部随主设置一起持久化，重启后自动恢复。
+
+#### 正式入口（Settings 组件）
+
+- 新增 `src/renderer/features/settings/components/general/desktop-lyrics-settings.tsx`，导出 `DesktopLyricsSettings`（`memo`），用既有 `SettingsSection` + `SettingOption` 渲染 5 个设置项，标题 `t('page.setting.desktopLyrics')`：
+  - **Enable**：`Switch` → `updateSetting({ enabled })`（开→主进程开窗；关→主进程关窗）。
+  - **Unlock**：`Button`（`disabled={!settings.enabled}`）→ `window.api.desktopLyrics.control({ type: 'unlock' })`（外部解锁入口，见下）。
+  - **Font Size**：`Slider`（min 12 / max 64 / step 1，label `${value}px`，`onChangeEnd`）→ `updateSetting({ fontSize })`。
+  - **Font Color**：`ColorInput`（`format="rgb"`、`swatchesPerRow={5}`、`withEyeDropper={false}`、`onChangeEnd`）→ `updateSetting({ fontColor })`。
+  - **Always On Top**：`Switch` → `updateSetting({ alwaysOnTop })`。
+- 全部设置项 `isHidden: !isElectron()`（web 构建不显示）；复用 `Switch`/`Slider`/`ColorInput`/`Button` 自定义 wrapper（均 forward 到 Mantine），**无新依赖、无新颜色库**。
+- `updateSetting` 用完整对象展开：`setSettings({ lyrics: { desktopLyrics: { ...settings, ...updates } } })`——**必须**带全量字段而非 `{ enabled: false }` 局部更新，因仓库的 `DeepPartial` 不递归进 `T | undefined` 联合（`settings.store.ts` 的 `setSettings` 对 `desktopLyrics` 这个「可选嵌套对象」要求完整对象，否则 TS2739 报缺字段）。
+- 注册到 `src/renderer/features/settings/components/general/general-tab.tsx`：`{ component: DesktopLyricsSettings, key: 'desktopLyrics' }` 紧随 `LyricSettings`（key `lyrics`）。
+
+#### 外部解锁（解决 Phase 6A 遗留的「锁定后无法从窗口内解锁」）
+
+Phase 6A 的锁定是单向的：`setIgnoreMouseEvents(true, { forward: true })` 后整窗点击穿透，窗口内控制栏随 `{!locked}` 隐藏，无法再从窗口内触发 `unlock`。本阶段补齐外部入口：
+
+```text
+主窗口 Settings「Unlock」按钮
+  → window.api.desktopLyrics.control({ type: 'unlock' })
+  → ipcRenderer.send('desktop-lyrics-control', { type: 'unlock' })
+  → main desktop-lyrics 模块 setLocked(false)
+  → setIgnoreMouseEvents(false) + notifyWindowState()
+  → 桌面歌词 renderer onWindowState → setLocked(false) → 控制栏重新显示
+```
+
+- **锁状态单一权威**：主进程 `desktopLyricsLocked` 是权威（它拥有 `setIgnoreMouseEvents`）；桌面歌词 renderer 的 `locked` 仅是 UI 镜像，由 `desktop-lyrics-window-state { locked }` 回传（`desktop-lyrics-app.tsx` 的 window-state echo effect）。
+- **不复制锁状态、不新增解锁通道**：解锁复用已有 `desktop-lyrics-control` 的 `unlock` intent（Phase 6A 已留 `unlock` 在类型与 main 分发中，前向兼容），不新建 `desktop-lyrics-unlock`。
+
+#### 锁状态同步（`desktop-lyrics-window-state` 扩展）
+
+- `DesktopLyricsWindowState` 由 `{ open }` 扩展为 `{ locked, open }`（`src/shared/types/desktop-lyrics.ts`）。
+- main `getWindowState()` 返回 `{ locked: desktopLyricsLocked, open: isDesktopLyricsWindowUsable() }`；`notifyWindowState()` 把该状态**同时**推给主窗口 renderer 与桌面歌词 renderer（`src/main/features/core/desktop-lyrics/index.ts`）。
+- 触发时机：开窗 `did-finish-load`、`setLocked` 变更、窗口 `closed`（`open:false` + `locked:false`）。
+- 主窗口 renderer 用它做**设置↔窗口状态一致性**（见下）；桌面歌词 renderer 用它同步 `locked` 以显示/隐藏控制栏。
+
+#### Always On Top（复用 `setAlwaysOnTop`，随设置生效/持久化）
+
+- 开窗时 `new BrowserWindow({ alwaysOnTop: currentDesktopLyricsConfig.alwaysOnTop })`；配置变更时 `desktopLyricsWindow.setAlwaysOnTop(config.alwaysOnTop)`（`desktop-lyrics-config` handler 内）。
+- `alwaysOnTop` 随主设置持久化，重开窗口即恢复；**不影响 lock/unlock**（`setIgnoreMouseEvents` 与 `setAlwaysOnTop` 正交）。
+- 不依赖跨窗口 localStorage（桌面歌词 renderer 不读 `store_settings`）。
+
+#### Font Size / Font Color（低频配置下发 + CSS 变量生效）
+
+- 共享类型 `DesktopLyricsConfig { alwaysOnTop, enabled, fontColor, fontSize }`（`src/shared/types/desktop-lyrics.ts`），**只发这 4 个必需字段**，不发整个 settings store。
+- 主窗口 config bridge `useDesktopLyricsConfigBridge`（`src/renderer/features/desktop-lyrics/use-desktop-lyrics-config-bridge.ts`）：
+  - `useEffect([alwaysOnTop, enabled, fontColor, fontSize])` → `window.api.desktopLyrics.sendConfig(config)`（挂载即发一次 + 任一字段变化即发一次，低频）。
+  - 挂载即发保证 `enabled=true` 时**开机自动开窗**（主进程收到 `enabled` 后 `createDesktopLyricsWindow()`），无需改启动流程（§H/§2 第 3 条的「渲染层设置→主进程镜像时机」问题由此规避：config bridge 在 AppEffects 挂载时主动推一次）。
+- 桌面歌词侧 `desktop-lyrics-config.store.ts`：模块顶层注册 `desktopLyricsListener.onConfig((config) => useDesktopLyricsConfigStore.setState(config))`；`DesktopLyricsApp` 读 `fontColor`/`fontSize` 组装 CSS 变量：
+  ```ts
+  const rootStyle = {
+      '--desktop-lyrics-font-color': fontColor,
+      '--desktop-lyrics-font-size': `${fontSize}px`,
+  } as CSSProperties;
+  ```
+  应用到 `.desktop-lyrics-root`；`.desktop-lyrics.css` 用 `var(--desktop-lyrics-font-size, 22px)` / `var(--desktop-lyrics-font-color, #fff)` 消费（活动行主字号 + 颜色；非活动行主字号 `calc(var(--desktop-lyrics-font-size) - 4px)`）。**字号/颜色变更即时生效**（live），非 renderer 本地临时态。
+
+#### 设置 ↔ 窗口状态一致性（窗口内 Close 是否回关设置）
+
+- **遵循「窗口内关闭 → 设置自动回 OFF」**，避免「显示 ON 但窗口已关」的失配态。
+- 机制：`useDesktopLyricsConfigBridge` 的第二个 effect 监听 `desktopLyricsListener.onWindowState`：当收到 `open:false`（且当前 `enabled=true`，即「窗口被关但设置还 ON」）时，`setSettings({ lyrics: { desktopLyrics: { ...current, enabled: false } } })`，把 `enabled` 同步为 false。
+- 主进程 `desktop-lyrics-config` handler 的 open/close 协调是**声明式且幂等**的：`config.enabled && !usable → create`；`!config.enabled && usable → close`。字号/颜色变化不触发开关（只重发 config + 应用 `setAlwaysOnTop`）。
+- **app quit 边界**：主窗口 `closed` handler（`main/index.ts`）先置 `mainWindow = null`，desktop-lyrics 模块的 `onMainWindowClosed` 后触发 → `notifyWindowState()` 里 `getMainWindow()` 已为 null，跳过主窗口推送，故退出时**不会**把 `enabled` 误写为 false（保留 `enabled=true` 供下次开机自动开窗）。
+
+#### 新增/修改文件
+
+**新建**：
+- `src/renderer/features/settings/components/general/desktop-lyrics-settings.tsx`：设置 UI（Enable/Unlock/Font Size/Font Color/Always On Top）。
+- `src/renderer/features/desktop-lyrics/use-desktop-lyrics-config-bridge.ts`：主窗口侧 config 下发 + 设置↔窗口状态一致性。
+- `src/renderer/features/desktop-lyrics/desktop-lyrics-config.store.ts`：桌面歌词侧 config 镜像 store（模块顶层 `onConfig` 注册）。
+
+**修改**：
+- `src/shared/types/desktop-lyrics.ts`：新增 `DesktopLyricsConfig`；`DesktopLyricsWindowState` 增 `locked`。
+- `src/preload/desktop-lyrics.ts`：`desktopLyrics` 增 `sendConfig`；`desktopLyricsListener` 增 `onConfig`。
+- `src/main/features/core/desktop-lyrics/index.ts`：新增 `currentDesktopLyricsConfig`/`DEFAULT_DESKTOP_LYRICS_CONFIG`/`getWindowState`/`notifyWindowState`/`sendConfigToDesktopLyrics`/`setLocked`；`createDesktopLyricsWindow` 用 `alwaysOnTop` 配置 + `did-finish-load` 发 config/window-state；新增 `ipcMain.on('desktop-lyrics-config', ...)`；`desktop-lyrics-control` 的 lock/unlock 改走 `setLocked`。
+- `src/renderer/store/settings.store.ts`：新增 `DesktopLyricsSettingsSchema` + `lyrics.desktopLyrics`（`.optional()`）+ `initialState` 默认值 + `useDesktopLyricsSettings`。
+- `src/renderer/features/settings/components/general/general-tab.tsx`：注册 `DesktopLyricsSettings`。
+- `src/renderer/features/desktop-lyrics/desktop-lyrics-app.tsx`：`locked` 改为 window-state echo 镜像；读 config store 组装 CSS 变量。
+- `src/renderer/features/desktop-lyrics/desktop-lyrics.css`：字号/颜色改 CSS 变量消费。
+- `src/renderer/app.tsx`：`AppEffects` 挂载 `<DesktopLyricsConfigBridgeEffect />`。
+- i18n（en/zh-Hans/zh-Hant）：`page.setting.desktopLyrics` + `setting.desktopLyricsEnable/_description`、`desktopLyricsUnlock/_description`、`desktopLyricsFontSize/_description`、`desktopLyricsFontColor/_description`、`desktopLyricsAlwaysOnTop/_description`。
+
+**明确不修改**：`player.store.ts`、`timestamp.store.ts`、`use-main-player-listener.tsx`、`preload/mpv-player.ts`、`preload/index.ts`（`desktopLyrics`/`desktopLyricsListener` 已在 Phase 3/4 登记）、`electron.vite.config.ts`、`src/main/index.ts`、`package.json` / lockfile。
+
+#### 新增 IPC
+
+| Channel | 方向 | Payload | 触发 |
+| --- | --- | --- | --- |
+| `desktop-lyrics-config` | 主窗口 renderer → main → 桌面歌词 renderer | `DesktopLyricsConfig` | config bridge 挂载 + 任一字段变更（低频）；main 同时协调 open/close + `setAlwaysOnTop` |
+
+> `desktop-lyrics-window-state` 由 `{open}` 扩展为 `{open, locked}`，非新通道；`desktop-lyrics-control` 复用 Phase 6A 的 `unlock` intent，非新通道。
+
+#### 与 Phase 2/6A 设计的偏差记录
+
+1. **`DesktopLyricsConfig` 字段与 §4 草案大不相同**：§4 草案的 config 是「`lyrics` + `lyricsDisplay` 子集」（对齐/延迟/跟随/字号/间距/透明度…），本阶段按 §三「MVP 只做 enabled / 字号 / 字体颜色 / 置顶」收敛为 `{ alwaysOnTop, enabled, fontColor, fontSize }` 四个字段。理由：桌面歌词 renderer 采用 Phase 5 的「独立镜像 store + 极简渲染」（方案 B），**不** seed settings store，因此不需要 `lyrics`/`lyricsDisplay` 的全量设置——只需渲染层真正消费的字号/颜色 + 窗口层真正消费的 enabled/置顶。
+2. **设置字段落在 `lyrics.desktopLyrics`（可选）而非新建顶层切片**：§H 原判断「放 `lyrics` 切片 + `LyricSettings` 加一个 Switch」；实际因含 4 个子项 + 独立 SettingsSection 标题，独立成 `desktop-lyrics` 子对象，但仍留在 `lyrics` 切片内、仍走 `useSettingsStore`，未新建第二 store/页面系统。
+3. **锁状态从「renderer 本地」改为「main 权威 + renderer 镜像」**：Phase 6A 用 renderer `useState` 持有 `locked`（单向）；本阶段因引入外部解锁，主进程 `desktopLyricsLocked` 成为权威，renderer `locked` 经 `desktop-lyrics-window-state {locked}` 回传镜像。开窗时重置 `desktopLyricsLocked = false`（消除陈旧标志失配）。
+4. **开机自动开窗不依赖启动流程改动**：§2 第 3 条「开机自动打开」原本需要主进程启动即知开关；实际由 config bridge 挂载时主动 `sendConfig` 实现（主进程 `enabled=true` → 开窗），`app.tsx` 仅多挂一个无 UI effect，无需触碰 `main/index.ts` 启动逻辑。
+
+#### 自动化验证（本阶段，未跑 dev 实例）
+
+**静态检查全部通过**（本机 Windows）：
+- `pnpm run typecheck`（node + web）通过。
+- `pnpm run lint-code`（eslint `--max-warnings=0`）通过（preload/settings.store 的 prettier 告警经 `--fix` 校正）。
+- `pnpm run lint-styles`（stylelint `--max-warnings=0`）通过（`color-hex-length` 要求 `#fff`，CSS 回退色已改短写）。
+- `pnpm run build:electron` 通过，`out/renderer/desktop-lyrics.html` 正常生成，`out/main/index.js` 含 `desktop-lyrics-config` 等全部通道。
+
+#### 最终人工测试清单（运行时，本阶段未跑 dev 实例）
+
+**设置入口 / 开关**
+1. Settings → General → Desktop Lyrics 区块存在，标题「Desktop Lyrics」/「桌面歌词」本地化正确。
+2. Enable 开 → 桌面歌词窗口打开；关 → 窗口关闭（声明式协调，非 toggle 竞态）。
+3. 开机/刷新主窗口后（`enabled=true` 已持久化）→ 自动开窗。
+
+**外部解锁**
+4. 桌面歌词控制栏点 Lock → 整窗鼠标穿透、控制栏隐藏、歌词继续刷新、alwaysOnTop 保持。
+5. 主窗口 Settings「Unlock」→ 桌面歌词控制栏重新显示、鼠标穿透解除、可再次拖动/点击。
+6. 反复 Lock/Unlock 多次，锁状态不漂移（main 权威 + 回传镜像一致）。
+
+**字号 / 字体颜色**
+7. Font Size 拖到 12~64 → 桌面歌词活动行/非活动行字号实时变化（CSS 变量），持久化后重开窗口保持。
+8. Font Color 选色 → 活动行颜色实时变化，持久化后保持。
+
+**Always On Top**
+9. 开 → 桌面歌词在所有窗口之上；关 → 不再置顶；持久化后重开窗口按新值创建。
+
+**设置 ↔ 窗口一致性**
+10. 桌面歌词控制栏点 Close → 窗口关、Settings 的 Enable 自动回 OFF（无「ON 但已关」失配）。
+11. 主窗口 app 退出时（若 `enabled=true`）不误把 `enabled` 写为 false，下次启动自动开窗。
+
+**Linux 平台（遗留风险）**
+12. `setIgnoreMouseEvents(true, { forward: true })` 的 `forward` 在 Linux 被忽略，锁定后 hover 不触发（预期）；外部解锁按钮仍可经 `desktop-lyrics-control` 解除穿透。
+
+#### BUG-02A 修复：Enable 点击后 `enabled` 被误写回 false（关闭/重开竞态）
+
+> ⚠️ **诊断更正**：本节最初把根因归为 `closed` 事件的「陈旧竞态」，该诊断**不完整**。真正的根因是 ConfigBridge 的 window-state 监听器**条件写反**（见下方 `### Phase 6B Runtime Bug Fix`）——`did-finish-load → open:true` 即触发回写，与是否有陈旧 `closed` 无关。本节对 `desktop-lyrics/index.ts` 的修复（陈旧守卫 + 关闭原因区分）本身**无回归**，作为防御性修复保留。
+
+**现象**：Enable=OFF 时点击 Enable，Unlock 短暂可点击后立即恢复 disabled，窗口不出现，离开设置页后 Enable 回 OFF。即 `lyrics.desktopLyrics.enabled` 发生 `false → true → false`。
+
+**根因**：`src/main/features/core/desktop-lyrics/index.ts` 的 `closed` 事件处理器**无条件**把 `desktopLyricsWindow` 置空并 `notifyWindowState()`（广播 `open:false`），无法区分「已销毁的旧窗口」与「刚创建的新窗口」。时序：
+
+```
+用户关闭窗口 A（control-bar close）→ closeDesktopLyricsWindow() → destroy(A)
+    （desktopLyricsWindow 仍指向 A，A.isDestroyed()=true，但 closed 尚未触发）
+用户点击 Enable → enabled=true → sendConfig({enabled:true})
+    → main config handler: isDesktopLyricsWindowUsable()=false（A 已 destroy）
+    → createDesktopLyricsWindow() → desktopLyricsWindow = B（新窗口）
+A 的 closed 事件（延迟）此时触发：
+    → desktopLyricsWindow = null          ← 清空新窗口 B 的引用
+    → notifyWindowState() → open:false    ← 误报「窗口被用户关闭」
+ConfigBridge 收到 open:false 且 enabled=true
+    → setSettings(enabled:false)          ← Unlock 恢复 disabled、窗口孤儿、Enable 回 OFF
+```
+
+- `enabled=true` 唯一来源：设置页 `updateSetting({enabled:true})`。
+- `enabled=false` 唯一来源（除 initialState 默认）：ConfigBridge 的 window-state 监听器（`use-desktop-lyrics-config-bridge.ts`）。
+
+**修复**（`src/main/features/core/desktop-lyrics/index.ts`，区分「用户主动关闭」与「内部生命周期关闭」）：
+
+1. **陈旧 `closed` 守卫**：`closed` 处理器开头 `if (desktopLyricsWindow !== window) return;`——被替换的旧窗口的延迟 `closed` 不再清空新窗口引用、不再误发 `open:false`。
+2. **关闭原因显式化**：`closeDesktopLyricsWindow(userInitiated = false)` 增加参数并写入模块级 `desktopLyricsCloseWasUserInitiated`；`closed` 处理器仅在 `wasUserInitiated === true` 时 `notifyWindowState()`（即只在用户主动关闭时把 `enabled` 回写 false）。
+   - 用户主动关闭（control-bar `close`、`desktop-lyrics-close`、`desktop-lyrics-toggle`）→ `true`。
+   - 内部生命周期关闭（settings 关 `enabled`、主窗口关闭/app 退出 `onMainWindowClosed`）→ `false`。
+3. `createDesktopLyricsWindow` 创建时重置 `desktopLyricsCloseWasUserInitiated = false`（与 `desktopLyricsLocked = false` 并列），防止陈旧关闭原因泄漏到新窗口。
+
+**效果**：
+- 用户点 control-bar Close → `open:false` → ConfigBridge 回写 `enabled:false`（保留「窗口关闭 → enabled 自动回 OFF」机制）。
+- settings 关 `enabled` → 窗口关闭但不发 `open:false`（`enabled` 已 false，无冗余写）。
+- app 退出 → 不发 `open:false`（不再依赖 `getMainWindow()===null` 的脆弱监听顺序）。
+- 关闭后快速重开 → 旧窗口延迟 `closed` 被守卫忽略，新窗口正常 `did-finish-load → open:true`。
+
+> 未修改：设置组件（`disabled`/`defaultChecked` 原样）、ConfigBridge 渲染层监听器逻辑、`DesktopLyricsWindowState` 类型（`open` 语义不变，仅发送时机收窄为用户关闭）。仅 `desktop-lyrics/index.ts` 一处改动。
+
+**验证**：`pnpm run typecheck`、`pnpm run lint-code`、`pnpm run build:electron` 均通过。运行时行为（关闭后快速重开、app 退出不误写）仍需在 `pnpm dev` 下按上方清单第 10/11 项人工复核。
+
+### Phase 6B Runtime Bug Fix（运行时缺陷修复：BUG-01/02/03 共同根因）
+
+**现象（人工测试确认）**：
+- BUG-01：点击 Enable，桌面歌词窗口不出现。
+- BUG-02：点击 Enable 后离开设置页再回来，Enable 回 OFF。
+- BUG-03：点击 Unlock 无法解除锁定（按钮始终 disabled）。
+
+**共同根因**：`src/renderer/features/desktop-lyrics/use-desktop-lyrics-config-bridge.ts` 的 window-state 监听器**条件写反**。注释意图是「窗口自行关闭时回关 `enabled`」，但 `!state.open` 守卫使代码只在 `open:true`（窗口打开）时继续执行，于是**窗口一打开就立刻回写 `enabled:false`**：
+
+```ts
+// 修复前（错误）
+const onWindowState = (state: DesktopLyricsWindowState) => {
+    if (!state.open || !enabled) {          // ← 仅在 open:true 且 enabled:true 时不返回
+        return;
+    }
+    setSettings({ lyrics: { desktopLyrics: { alwaysOnTop, enabled: false, fontColor, fontSize } } });
+};
+```
+
+**完整时序（首次点击 Enable）**：
+
+```
+点击 Enable → updateSetting({enabled:true}) → store enabled=true（持久化正确）
+  → ConfigBridge sendConfig({enabled:true})
+  → main config handler → createDesktopLyricsWindow()
+  → did-finish-load → notifyWindowState() → open:true
+  → ConfigBridge 监听器收到 {open:true}：!state.open=false → 不返回 → setSettings(enabled:false)
+  → ConfigBridge sendConfig({enabled:false})
+  → main config handler → closeDesktopLyricsWindow(false) → 窗口销毁
+```
+
+于是三个 bug 同源：
+- **BUG-01**：窗口「创建后立即销毁」，用户看不到窗口。
+- **BUG-02**：store 的 `enabled` 被回写 false；`Switch` 为非受控 `defaultChecked`，当前页视觉仍为 ON，重新挂载后才读回 false。
+- **BUG-03**：`enabled` 已 false，Unlock 按钮 `disabled={!settings.enabled}` 恒禁用。
+
+**修复**（`use-desktop-lyrics-config-bridge.ts`，单行条件反转）：
+
+```ts
+// 修复后（正确）：仅在「窗口已关闭（open:false）且设置仍开启」时回写
+const onWindowState = (state: DesktopLyricsWindowState) => {
+    if (state.open || !enabled) {
+        return;
+    }
+    setSettings({ lyrics: { desktopLyrics: { alwaysOnTop, enabled: false, fontColor, fontSize } } });
+};
+```
+
+**关于 BUG-02A 修复的再评估（是否引入回归）**：上一节 BUG-02A 的修复**没有引入回归**，且作为防御性修复**保留**：
+- 「窗口关闭 → enabled 自动回 OFF」机制保留——control-bar `close`、`desktop-lyrics-close`、`desktop-lyrics-toggle` 均以 `userInitiated=true` 关闭，仍会发 `open:false` → 触发回写。
+- 陈旧 `closed` 守卫防止「关闭后快速重开」时旧窗口延迟 `closed` 清空新窗口引用。
+- 关闭原因区分避免 settings 关 `enabled` / app 退出时冗余广播 `open:false`（这些路径 `enabled` 已 false 或主窗口已销毁）。
+
+**旁证**：`use-desktop-lyrics-main-bridge.ts`（播放同步桥）的 `onWindowState` 是**正确**的（`if (state.open) startSync() else stopSync()`），进一步印证 ConfigBridge 的条件是唯一的「写反」。
+
+**验证**：
+- 静态：`pnpm run typecheck`、`pnpm run lint-code`、`pnpm run lint-styles`、`pnpm run build:electron` 全部通过。
+- 运行时：`pnpm dev` 启动成功、主窗口正常加载（无桌面歌词相关报错）。UI 点击类测试（Enable/Disable/Unlock/持久化共 23 项）需人工在 `pnpm dev` 下复核——本环境无法自动完成 UI 操作。

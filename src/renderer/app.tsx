@@ -32,6 +32,7 @@ import { AudioPlayers } from '/@/renderer/features/player/components/audio-playe
 import { ReleaseNotesModal } from '/@/renderer/release-notes-modal';
 import { useDesktopLyricsBridge } from '/@/renderer/features/desktop-lyrics/use-desktop-lyrics-main-bridge';
 import { useDesktopLyricsLyricsBridge } from '/@/renderer/features/desktop-lyrics/use-desktop-lyrics-lyrics-bridge';
+import { useDesktopLyricsConfigBridge } from '/@/renderer/features/desktop-lyrics/use-desktop-lyrics-config-bridge';
 
 const UpdateAvailableDialog = lazy(() =>
     import('./update-available-dialog').then((module) => ({
@@ -125,6 +126,7 @@ const AppEffects = () => (
         <InputFocusEffect />
         <DesktopLyricsBridgeEffect />
         <DesktopLyricsLyricsBridgeEffect />
+        <DesktopLyricsConfigBridgeEffect />
     </>
 );
 
@@ -282,6 +284,12 @@ const DesktopLyricsBridgeEffect = () => {
 
 const DesktopLyricsLyricsBridgeEffect = () => {
     useDesktopLyricsLyricsBridge();
+
+    return null;
+};
+
+const DesktopLyricsConfigBridgeEffect = () => {
+    useDesktopLyricsConfigBridge();
 
     return null;
 };

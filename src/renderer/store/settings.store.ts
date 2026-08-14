@@ -608,6 +608,13 @@ const HotkeysSettingsSchema = z.object({
     globalMediaHotkeys: z.boolean(),
 });
 
+const DesktopLyricsSettingsSchema = z.object({
+    alwaysOnTop: z.boolean(),
+    enabled: z.boolean(),
+    fontColor: z.string(),
+    fontSize: z.number(),
+});
+
 const LyricsDisplaySettingsSchema = z.object({
     fontSize: z.number(),
     fontSizeUnsync: z.number(),
@@ -622,6 +629,7 @@ const LyricsDisplaySettingsSchema = z.object({
 const LyricsSettingsSchema = z.object({
     alignment: z.enum(['center', 'left', 'right']),
     delayMs: z.number(),
+    desktopLyrics: DesktopLyricsSettingsSchema.optional(),
     enableAutoTranslation: z.boolean(),
     enableFurigana: z.boolean().optional(),
     enableNeteaseTranslation: z.boolean(),
@@ -1994,6 +2002,12 @@ const initialState: SettingsState = {
     lyrics: {
         alignment: 'center',
         delayMs: 0,
+        desktopLyrics: {
+            alwaysOnTop: true,
+            enabled: false,
+            fontColor: '#ffffff',
+            fontSize: 22,
+        },
         enableAutoTranslation: false,
         enableFurigana: false,
         enableNeteaseTranslation: false,
@@ -2921,6 +2935,22 @@ export const useMpvSettings = () =>
     useSettingsStore((state) => state.playback.mpvProperties, shallow);
 
 export const useLyricsSettings = () => useSettingsStore((state) => state.lyrics, shallow);
+
+// Desktop lyrics settings are optional in the persisted schema (older settings
+// files may not include them), so this hook normalizes the nested object with
+// fallback defaults. The live store always has the full object via the initial
+// state merge, but the optional schema keeps older imports valid.
+export const useDesktopLyricsSettings = () =>
+    useSettingsStore((state) => {
+        const desktopLyrics = state.lyrics.desktopLyrics;
+
+        return {
+            alwaysOnTop: desktopLyrics?.alwaysOnTop ?? true,
+            enabled: desktopLyrics?.enabled ?? false,
+            fontColor: desktopLyrics?.fontColor ?? '#ffffff',
+            fontSize: desktopLyrics?.fontSize ?? 22,
+        };
+    }, shallow);
 
 export const useLyricsDisplaySettings = (key: string = 'default') =>
     useSettingsStore((state) => state.lyricsDisplay[key] || state.lyricsDisplay.default, shallow);

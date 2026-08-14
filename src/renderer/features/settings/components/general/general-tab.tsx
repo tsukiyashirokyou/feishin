@@ -3,6 +3,7 @@ import { Fragment } from 'react/jsx-runtime';
 
 import { ApplicationSettings } from '/@/renderer/features/settings/components/general/application-settings';
 import { ControlSettings } from '/@/renderer/features/settings/components/general/control-settings';
+import { DesktopLyricsSettings } from '/@/renderer/features/settings/components/general/desktop-lyrics-settings';
 import { ExternalLinksSettings } from '/@/renderer/features/settings/components/general/external-links-settings';
 import { LyricSettings } from '/@/renderer/features/settings/components/general/lyric-settings';
 import { QueryBuilderSettings } from '/@/renderer/features/settings/components/general/query-builder-settings';
@@ -28,6 +29,7 @@ export const GeneralTab = memo(() => {
             { component: SidebarSettings, key: 'sidebar' },
             { component: ScrobbleSettings, key: 'scrobble' },
             { component: LyricSettings, key: 'lyrics' },
+            { component: DesktopLyricsSettings, key: 'desktopLyrics' },
         ];
 
         if (supportsSmartPlaylists) {
