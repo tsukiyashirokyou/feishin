@@ -1,5 +1,6 @@
 import './autodiscover';
 import './custom-themes';
+import './desktop-lyrics';
 import './lyrics';
 import './player';
 import './remote';

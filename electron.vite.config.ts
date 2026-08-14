@@ -57,6 +57,12 @@ const createConfig = (isDevelopment: boolean): UserConfig => ({
             modulePreload: {
                 polyfill: false,
             },
+            rollupOptions: {
+                input: {
+                    'desktop-lyrics': resolve('src/renderer/desktop-lyrics.html'),
+                    index: resolve('src/renderer/index.html'),
+                },
+            },
             sourcemap: true,
             target: electronRendererTarget,
         },

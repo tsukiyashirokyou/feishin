@@ -30,6 +30,8 @@ import '/@/shared/styles/global.css';
 import { PlayerProvider } from '/@/renderer/features/player/context/player-context';
 import { AudioPlayers } from '/@/renderer/features/player/components/audio-players';
 import { ReleaseNotesModal } from '/@/renderer/release-notes-modal';
+import { useDesktopLyricsBridge } from '/@/renderer/features/desktop-lyrics/use-desktop-lyrics-main-bridge';
+import { useDesktopLyricsLyricsBridge } from '/@/renderer/features/desktop-lyrics/use-desktop-lyrics-lyrics-bridge';
 
 const UpdateAvailableDialog = lazy(() =>
     import('./update-available-dialog').then((module) => ({
@@ -121,6 +123,8 @@ const AppEffects = () => (
         <NativeMenuSyncEffect />
         <FullscreenToggleEffect />
         <InputFocusEffect />
+        <DesktopLyricsBridgeEffect />
+        <DesktopLyricsLyricsBridgeEffect />
     </>
 );
 
@@ -266,6 +270,18 @@ const NativeMenuSyncEffect = () => {
 
 const FullscreenToggleEffect = () => {
     useFullscreenToggle();
+
+    return null;
+};
+
+const DesktopLyricsBridgeEffect = () => {
+    useDesktopLyricsBridge();
+
+    return null;
+};
+
+const DesktopLyricsLyricsBridgeEffect = () => {
+    useDesktopLyricsLyricsBridge();
 
     return null;
 };

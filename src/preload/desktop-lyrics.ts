@@ -1,0 +1,76 @@
+import { ipcRenderer } from 'electron';
+
+import {
+    DesktopLyricsData,
+    DesktopLyricsState,
+    DesktopLyricsWindowState,
+} from '/@/shared/types/desktop-lyrics';
+
+const close = () => {
+    return ipcRenderer.invoke('desktop-lyrics-close');
+};
+
+const lock = () => {
+    ipcRenderer.send('desktop-lyrics-lock');
+};
+
+const open = () => {
+    return ipcRenderer.invoke('desktop-lyrics-open');
+};
+
+const sendLyrics = (lyrics: DesktopLyricsData) => {
+    ipcRenderer.send('desktop-lyrics-lyrics', lyrics);
+};
+
+const sendState = (state: DesktopLyricsState) => {
+    ipcRenderer.send('desktop-lyrics-state', state);
+};
+
+const toggle = () => {
+    return ipcRenderer.invoke('desktop-lyrics-toggle');
+};
+
+const unlock = () => {
+    ipcRenderer.send('desktop-lyrics-unlock');
+};
+
+const onLyrics = (cb: (lyrics: DesktopLyricsData) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, lyrics: DesktopLyricsData) => cb(lyrics);
+    ipcRenderer.on('desktop-lyrics-lyrics', listener);
+
+    return () => ipcRenderer.removeListener('desktop-lyrics-lyrics', listener);
+};
+
+const onState = (cb: (state: DesktopLyricsState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: DesktopLyricsState) => cb(state);
+    ipcRenderer.on('desktop-lyrics-state', listener);
+
+    return () => ipcRenderer.removeListener('desktop-lyrics-state', listener);
+};
+
+const onWindowState = (cb: (state: DesktopLyricsWindowState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: DesktopLyricsWindowState) =>
+        cb(state);
+    ipcRenderer.on('desktop-lyrics-window-state', listener);
+
+    return () => ipcRenderer.removeListener('desktop-lyrics-window-state', listener);
+};
+
+export const desktopLyrics = {
+    close,
+    lock,
+    open,
+    sendLyrics,
+    sendState,
+    toggle,
+    unlock,
+};
+
+export const desktopLyricsListener = {
+    onLyrics,
+    onState,
+    onWindowState,
+};
+
+export type DesktopLyrics = typeof desktopLyrics;
+export type DesktopLyricsListener = typeof desktopLyricsListener;

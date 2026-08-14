@@ -1,0 +1,71 @@
+html,
+body,
+#root {
+    height: 100%;
+}
+
+body {
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+    background: transparent;
+}
+
+.desktop-lyrics-root {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    user-select: none;
+    background: rgb(0 0 0 / 40%);
+    -webkit-app-region: drag;
+}
+
+.desktop-lyrics-scroll {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    max-height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+.desktop-lyrics-line {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: center;
+    padding: 4px 16px;
+}
+
+.desktop-lyrics-line-main {
+    font-size: 18px;
+    line-height: 1.4;
+    color: rgb(255 255 255 / 50%);
+    text-align: center;
+    white-space: pre-line;
+    transition: color 0.2s ease, font-size 0.2s ease;
+}
+
+.desktop-lyrics-line-pronunciation {
+    font-size: 13px;
+    color: rgb(255 255 255 / 40%);
+}
+
+.desktop-lyrics-line-translation {
+    font-size: 15px;
+    color: rgb(255 255 255 / 65%);
+}
+
+.desktop-lyrics-line-active .desktop-lyrics-line-main {
+    font-size: 22px;
+    font-weight: 600;
+    color: #fff;
+}
+
+.desktop-lyrics-empty {
+    font-size: 16px;
+    color: rgb(255 255 255 / 70%);
+}
