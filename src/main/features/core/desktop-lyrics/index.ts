@@ -4,7 +4,11 @@ import { join } from 'path';
 
 import { getMainWindow } from '/@/main/index';
 import log from '/@/main/logger';
-import { DesktopLyricsData, DesktopLyricsState } from '/@/shared/types/desktop-lyrics';
+import {
+    DesktopLyricsControlAction,
+    DesktopLyricsData,
+    DesktopLyricsState,
+} from '/@/shared/types/desktop-lyrics';
 
 let desktopLyricsWindow: BrowserWindow | null = null;
 let removeMainWindowClosedListener: (() => void) | null = null;
@@ -61,6 +65,16 @@ const notifyMainWindowState = (open: boolean) => {
     }
 
     mainWindow.webContents.send('desktop-lyrics-window-state', { open });
+};
+
+const sendToMainWindow = (channel: string) => {
+    const mainWindow = getMainWindow();
+
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        return;
+    }
+
+    mainWindow.webContents.send(channel);
 };
 
 const createDesktopLyricsWindow = () => {
@@ -134,12 +148,33 @@ ipcMain.handle('desktop-lyrics-toggle', () => {
     }
 });
 
-ipcMain.on('desktop-lyrics-lock', () => {
-    setLocked(true);
-});
-
-ipcMain.on('desktop-lyrics-unlock', () => {
-    setLocked(false);
+// Handle a control intent from the desktop lyrics renderer's control bar.
+// Player controls are relayed to the main window's existing `renderer-player-*`
+// channels (the main window is the only authoritative player); window actions
+// (lock/unlock/close) are handled locally. No seek action: click-to-seek is
+// deferred and, when added, must go through the main window's
+// `mediaSeekToTimestamp` rather than a direct `mpvPlayer.seekTo`.
+ipcMain.on('desktop-lyrics-control', (_event, action: DesktopLyricsControlAction) => {
+    switch (action.type) {
+        case 'close':
+            closeDesktopLyricsWindow();
+            break;
+        case 'lock':
+            setLocked(true);
+            break;
+        case 'next':
+            sendToMainWindow('renderer-player-next');
+            break;
+        case 'previous':
+            sendToMainWindow('renderer-player-previous');
+            break;
+        case 'toggle-play':
+            sendToMainWindow('renderer-player-play-pause');
+            break;
+        case 'unlock':
+            setLocked(false);
+            break;
+    }
 });
 
 // Forward a playback-state snapshot from the main window renderer to the

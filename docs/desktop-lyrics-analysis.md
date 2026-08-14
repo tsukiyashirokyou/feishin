@@ -744,3 +744,121 @@ close（桌面歌词 renderer 发 control.close / settings toggle-off / 主窗�
 8. 无歌词曲目：显示本地化空状态文案（随语言设置）。
 9. 主窗口切换语言后，桌面歌词空状态文案跟随。
 10. 非同步歌词曲目：当前按空状态处理（已知限制）。
+
+### Phase 6A — Controls & Window Interaction（控制栏 + 窗口交互）
+
+本阶段把桌面歌词从「只读歌词显示器」变为「可操作窗口」：播放/暂停、上一首/下一首、锁定、关闭、hover 控制栏、锁定鼠标穿透、解锁拖动、基础视觉整理。**明确不实现**：seek（点击歌词跳转）、Settings（字体/配色/设置入口/Desktop Lyrics 开关，延后 Phase 6B）。
+
+#### 控制链（复用现有架构，零新增主窗口监听）
+
+播放控制**完全复用**主窗口已有 `renderer-player-*` 通道 + `use-main-player-listener.tsx`：
+
+```text
+Desktop Lyrics renderer（控制栏按钮）
+  → window.api.desktopLyrics.control({ type: 'toggle-play' | 'next' | 'previous' })
+  → ipcRenderer.send('desktop-lyrics-control', action)
+  → main（desktop-lyrics 模块 ipcMain.on('desktop-lyrics-control')）
+  → getMainWindow().webContents.send('renderer-player-play-pause' | 'renderer-player-next' | 'renderer-player-previous')
+  → 主窗口 renderer use-main-player-listener.tsx:51/57/69
+  → mediaTogglePlayPause() / mediaNext(false) / mediaPrevious(false)
+```
+
+- **play/pause 采用单一 `toggle-play` intent**（转发到 `renderer-player-play-pause` → `mediaTogglePlayPause()`）。不暴露 `play`/`pause`/`play-pause` 三套，符合 §三「只暴露最小 intent」。
+- **previous/next** 复用 `renderer-player-previous`/`renderer-player-next`（→ `mediaPrevious(false)`/`mediaNext(false)`），不新建。
+- **不建立第二播放控制系统**：桌面歌词 renderer 不直接访问播放器、不调 mpv、不创建 player action、不改 player store。
+
+#### 新增 IPC
+
+| Channel | 方向 | Payload | 触发 |
+| --- | --- | --- | --- |
+| `desktop-lyrics-control` | 桌面歌词 renderer → main | `DesktopLyricsControlAction`（判别联合） | 控制栏按钮点击 |
+
+`DesktopLyricsControlAction`（`src/shared/types/desktop-lyrics.ts`）：
+
+```ts
+export type DesktopLyricsControlAction =
+    | { type: 'close' }
+    | { type: 'lock' }
+    | { type: 'next' }
+    | { type: 'previous' }
+    | { type: 'toggle-play' }
+    | { type: 'unlock' };
+```
+
+main 分发：`toggle-play`/`next`/`previous` → `sendToMainWindow('renderer-player-*')`；`lock`/`unlock` → `setLocked(bool)`；`close` → `closeDesktopLyricsWindow()`。
+
+**移除的通道**：`desktop-lyrics-lock`、`desktop-lyrics-unlock`（Phase 3 debug 面板专用，其唯一消费者已随 Phase 5 删除；控制栏的 lock/unlock 现统一走 `desktop-lyrics-control`）。`desktop-lyrics-open`/`-close`/`-toggle`（invoke，主窗口生命周期/Phase 6B 设置入口用）保留不变。
+
+#### 修改文件
+
+**新建**：
+- `src/renderer/features/desktop-lyrics/desktop-lyrics-control-bar.tsx`：控制栏组件。5 个按钮（previous / play-pause / next / lock / close），图标用 `react-icons/ri`（`RiSkipBackFill`/`RiPauseFill`/`RiPlayFill`/`RiSkipForwardFill`/`RiLockFill`/`RiCloseLine`，复用项目既有图标库，非新依赖）。play/pause 图标由镜像 store 的 `status === PlayerStatus.PLAYING` 决定；按钮 `onClick` 调 `window.api.desktopLyrics.control(...)`。
+
+**修改**：
+- `src/shared/types/desktop-lyrics.ts`：新增 `DesktopLyricsControlAction`（判别联合，字母序：close/lock/next/previous/toggle-play/unlock）。
+- `src/preload/desktop-lyrics.ts`：`desktopLyrics` 增 `control(action)`（`ipcRenderer.send('desktop-lyrics-control', action)`），删除孤儿 `lock`/`unlock`。
+- `src/main/features/core/desktop-lyrics/index.ts`：新增 `sendToMainWindow(channel)` 助手 + `ipcMain.on('desktop-lyrics-control', ...)` 分发（switch，字母序 case）；删除 `desktop-lyrics-lock`/`-unlock` 两个 handler。
+- `src/renderer/features/desktop-lyrics/desktop-lyrics-app.tsx`：新增 `locked` state + `handleLock`（`setLocked(true)` + `control({type:'lock'})`）；空状态与非空状态两处返回均条件渲染 `{!locked && <DesktopLyricsControlBar onLock={handleLock} />}`。
+- `src/renderer/features/desktop-lyrics/desktop-lyrics.css`：新增控制栏/按钮/hover 样式；**移除 `.desktop-lyrics-root` 的 `rgb(0 0 0 / 40%)` 整窗底色**，改为歌词行 + 空状态 `text-shadow` 保可读性（满足 §十「透明背景 / 不添加大块不必要背景」）。
+
+**明确不修改**：`player.store.ts`、`timestamp.store.ts`、`settings.store.ts`、`use-main-player-listener.tsx`、`preload/mpv-player.ts`（复用 `renderer-player-*`，零改动）。
+
+#### lock/unlock 设计
+
+- 锁状态由**桌面歌词 renderer 本地 state** 持有（`locked`，初始 `false`），因为锁只由控制栏按钮发起（6A 无外部解锁入口）。
+- 点击 lock → `setLocked(true)` + `control({type:'lock'})` → main `setLocked(true)` → `setIgnoreMouseEvents(true, { forward: true })`（`forward` 保留 hover 事件但点击穿透，Windows/macOS 生效，Linux 忽略）。
+- **锁定后控制栏随 `{!locked && ...}` 隐藏**：hover 不会「强制取消穿透」，整个窗口默认穿透，符合 §六「控制栏出现时不能破坏穿透语义」。
+- **6A 为单向锁定**：锁定后窗口点击穿透，窗口内无法再点「解锁」（这正是桌面歌词「锁定=不拦截鼠标」的语义）。`unlock` intent 仍保留在类型与 main 分发中（前向兼容），**窗口内触发不到**；外部解锁入口（主窗口 Settings/开关，Phase 6B）延后。此为已知限制，非 bug。
+- **未采用「临时假取消穿透」**：不给控制栏单独开鼠标事件区域（`setIgnoreMouseEvents` 是窗口级 OS 设置，无 per-region 例外；临时 toggle 会复杂化锁状态，§六明确禁止）。
+
+#### hover 行为
+
+- 控制栏揭示用 **CSS `:hover`**（`.desktop-lyrics-root:hover .desktop-lyrics-control-bar`），非 JS `mouseenter`/`mouseleave`——对 `-webkit-app-region: drag` 区域更稳健。
+- 隐藏态：`opacity: 0` + `pointer-events: none`（不拦截鼠标，不破坏拖动）；hover 态：`opacity: 1` + `pointer-events: auto`。
+- 空状态（无歌词）与正常态都渲染控制栏（close/lock 在无歌词时仍可用）。
+
+#### drag 行为
+
+- `.desktop-lyrics-root`：`-webkit-app-region: drag`（整窗可拖动，含歌词文字——§九「歌词文字是否 drag」选可拖）。
+- `.desktop-lyrics-control-bar` + `.desktop-lyrics-control-button`：`-webkit-app-region: no-drag`（控制栏与按钮可点击，不触发拖动）。**未修改 Electron window manager**。
+
+#### seek 流程（本阶段未实现，留档）
+
+§五「点击歌词跳转」为条件项（「如果支持」），不在 §一 10 项范围，故**未实现**。将来加入时唯一正确路径（已确认，沿用 §3 结论）：
+
+```text
+Desktop Lyrics → desktop-lyrics-control {type:'seek', timestamp}
+  → main → getMainWindow().webContents.send('desktop-lyrics-seek', {timestamp})
+  → 主窗口 renderer 新监听器 → mediaSeekToTimestamp(timestamp)
+```
+
+**绝不** `mpvPlayer.seekTo()`：会绕过 timestamp store、破坏 WEB/JUKEBOX/WAVESURFER 后端统一。`renderer-player-*` 无 seek 通道，故将来需新增 `desktop-lyrics-seek`（主窗口侧唯一新增监听）。当前 `DesktopLyricsControlAction` 不含 `seek`。
+
+#### 与 Phase 2 设计相比的变化
+
+1. **`play`/`pause`/`play-pause` 三合一 → 单一 `toggle-play`**：§3 草案 `DesktopLyricsControlAction` 含 `play-pause`/`play`/`pause` 三个；实际只保留 `toggle-play`（§三「不要在 public IPC API 中同时存在 play/pause/play-pause」）。
+2. **`seek` 移除**：§3 草案含 `{type:'seek', timestamp}`；实际未实现（§五条件项、§一范围外），故 `DesktopLyricsControlAction` 不含 `seek`，也未新增 `desktop-lyrics-seek` 通道。
+3. **`desktop-lyrics-lock`/`-unlock` 通道删除**：Phase 3 为 debug 面板建的独立锁通道，其消费者已在 Phase 5 删除；控制栏 lock/unlock 统一并入 `desktop-lyrics-control`，避免冗余通道（§十一「不要保留已证明不需要的 action」）。
+4. **控制栏 close 走 `desktop-lyrics-control {type:'close'}`**：与主窗口生命周期 `desktop-lyrics-close`（invoke，Phase 6B 设置入口用）语义区分——前者「窗口内关自己」，后者「主窗口关窗口」，二者都最终调 `closeDesktopLyricsWindow()`。
+5. **`DesktopLyricsControlAction` 字母序**：close/lock/next/previous/toggle-play/unlock（满足 `perfectionist/sort-modules` 与 switch case 一致）。
+
+#### 自动化验证（本阶段，未跑 dev 实例）
+
+**静态检查全部通过**（本机 Windows）：
+- `pnpm run typecheck`（node + web）通过。
+- `pnpm run lint-code`（eslint `--max-warnings=0`）通过（`sort-modules` 由 `--fix` 校正 `DesktopLyricsControlAction` 置顶）。
+- `pnpm run lint-styles`（stylelint `--max-warnings=0`）通过（recess-order 属性序已手排）。
+- `pnpm run build:electron` 通过（46.71s）。
+
+#### 尚待人工验证的问题（运行时，留待 Phase 6B 后）
+
+1. hover 控制栏出现/消失（含 `-webkit-app-region: drag` 区域 `:hover` 是否可靠）。
+2. 控制栏 previous/play-pause/next 是否经 `renderer-player-*` 正确驱动播放（主窗口播放器响应）。
+3. play/pause 图标随 `status` 正确切换（暂停时显示 play、播放时显示 pause）。
+4. close 按钮是否经 main `closeDesktopLyricsWindow()` 关闭，且 Phase 4 订阅停止、可再次 open。
+5. 锁定后整窗鼠标穿透、歌词继续刷新、alwaysOnTop 保持；hover 不揭示控制栏。
+6. 解锁入口（6A 无）——窗口内锁定后无法解锁，需 Phase 6B 外部入口；当前仅能重启或 DevTools 手动 `unlock` 验证。
+7. 未锁定时整窗可拖动，控制栏/按钮 `no-drag` 可点击。
+8. 移除整窗底色后歌词在亮色/复杂壁纸上的可读性（text-shadow 是否足够）。
+9. Linux 下 `setIgnoreMouseEvents(true, {forward:true})` 的 `forward` 被忽略，锁定后 hover 不触发（预期）。
+10. `react-icons/ri` 图标在桌面歌词独立 renderer（无 Mantine）下正常渲染、颜色为 `currentColor`（#fff）。

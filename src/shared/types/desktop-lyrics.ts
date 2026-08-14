@@ -1,6 +1,20 @@
 import { SynchronizedLyrics } from '/@/shared/types/domain-types';
 import { PlayerStatus, PlayerType } from '/@/shared/types/types';
 
+// Control intent sent by the desktop lyrics renderer's control bar. The main
+// process relays player controls to the main window's existing
+// `renderer-player-*` channels (handled by `useMainPlayerListener`) and handles
+// window-level actions (`lock`/`unlock`/`close`) locally. `seek` is
+// intentionally absent: click-to-seek is deferred and, when added, must route
+// through the main window's `mediaSeekToTimestamp` rather than `mpvPlayer.seekTo`.
+export type DesktopLyricsControlAction =
+    | { type: 'close' }
+    | { type: 'lock' }
+    | { type: 'next' }
+    | { type: 'previous' }
+    | { type: 'toggle-play' }
+    | { type: 'unlock' };
+
 // Synchronized lyrics for the current song, resolved and normalized by the main
 // window renderer (the only place with server/settings/query context) and
 // forwarded to the desktop lyrics renderer. Reuses the existing

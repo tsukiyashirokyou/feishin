@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { DesktopLyricsControlBar } from './desktop-lyrics-control-bar';
 import { useDesktopLyricsLyricsStore } from './desktop-lyrics-lyrics.store';
 import { useDesktopLyricsStore } from './desktop-lyrics.store';
 
@@ -19,6 +20,16 @@ export const DesktopLyricsApp = () => {
     const language = useDesktopLyricsStore((state) => state.language);
     const timestamp = useDesktopLyricsStore((state) => state.timestamp);
     const lyricsData = useDesktopLyricsLyricsStore();
+    const [locked, setLocked] = useState(false);
+
+    // Locking is a one-way transition in this phase: once locked, the window is
+    // click-through (`setIgnoreMouseEvents(true)`), so the control bar is hidden
+    // and there is no in-window way to unlock. Unlocking (via the main window's
+    // settings/toggle) is deferred to Phase 6B.
+    const handleLock = useCallback(() => {
+        setLocked(true);
+        window.api.desktopLyrics.control({ type: 'lock' });
+    }, []);
 
     // The desktop lyrics renderer is its own process, so the i18n singleton
     // defaults to the fallback language until it learns the main window's
@@ -55,6 +66,7 @@ export const DesktopLyricsApp = () => {
         return (
             <div className="desktop-lyrics-root">
                 <div className="desktop-lyrics-empty">{t('page.fullscreenPlayer.noLyrics')}</div>
+                {!locked && <DesktopLyricsControlBar onLock={handleLock} />}
             </div>
         );
     }
@@ -98,6 +110,7 @@ export const DesktopLyricsApp = () => {
                     );
                 })}
             </div>
+            {!locked && <DesktopLyricsControlBar onLock={handleLock} />}
         </div>
     );
 };

@@ -1,6 +1,7 @@
 import { ipcRenderer } from 'electron';
 
 import {
+    DesktopLyricsControlAction,
     DesktopLyricsData,
     DesktopLyricsState,
     DesktopLyricsWindowState,
@@ -10,8 +11,8 @@ const close = () => {
     return ipcRenderer.invoke('desktop-lyrics-close');
 };
 
-const lock = () => {
-    ipcRenderer.send('desktop-lyrics-lock');
+const control = (action: DesktopLyricsControlAction) => {
+    ipcRenderer.send('desktop-lyrics-control', action);
 };
 
 const open = () => {
@@ -28,10 +29,6 @@ const sendState = (state: DesktopLyricsState) => {
 
 const toggle = () => {
     return ipcRenderer.invoke('desktop-lyrics-toggle');
-};
-
-const unlock = () => {
-    ipcRenderer.send('desktop-lyrics-unlock');
 };
 
 const onLyrics = (cb: (lyrics: DesktopLyricsData) => void) => {
@@ -58,12 +55,11 @@ const onWindowState = (cb: (state: DesktopLyricsWindowState) => void) => {
 
 export const desktopLyrics = {
     close,
-    lock,
+    control,
     open,
     sendLyrics,
     sendState,
     toggle,
-    unlock,
 };
 
 export const desktopLyricsListener = {
