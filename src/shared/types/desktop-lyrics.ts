@@ -6,21 +6,28 @@ import { PlayerStatus, PlayerType } from '/@/shared/types/types';
 // fields the desktop lyrics feature needs are sent — never the whole settings
 // store. `enabled` is the source of truth for open/close; `alwaysOnTop` is
 // applied by the main process at window creation and on change; `fontSize` and
-// `fontColor` are applied by the desktop lyrics renderer as CSS variables.
+// `fontColor` are applied by the desktop lyrics renderer as CSS variables;
+// `lineLeadTimeMs` (from the shared lyrics settings) drives the scroll-ahead
+// target without advancing the highlight.
 export interface DesktopLyricsConfig {
     alwaysOnTop: boolean;
     enabled: boolean;
     fontColor: string;
     fontSize: number;
+    lineLeadTimeMs: number;
 }
 
 // Control intent sent by the desktop lyrics renderer's control bar. The main
 // process relays player controls to the main window's existing
 // `renderer-player-*` channels (handled by `useMainPlayerListener`) and handles
-// window-level actions (`lock`/`unlock`/`close`) locally. `seek` is
+// window-level actions (`lock`/`unlock`/`close`) locally. `set-locked-hover` is
+// a transient (non-authoritative) signal that temporarily restores mouse events
+// to a locked window while it is hovered so the unlock control can be clicked —
+// it never changes the authoritative `desktopLyricsLocked` flag. `seek` is
 // intentionally absent: click-to-seek is deferred and, when added, must route
 // through the main window's `mediaSeekToTimestamp` rather than `mpvPlayer.seekTo`.
 export type DesktopLyricsControlAction =
+    | { hovered: boolean; type: 'set-locked-hover' }
     | { type: 'close' }
     | { type: 'lock' }
     | { type: 'next' }

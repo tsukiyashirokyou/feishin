@@ -1,5 +1,5 @@
 import { is } from '@electron-toolkit/utils';
-import { BrowserWindow, ipcMain } from 'electron';
+import { BrowserWindow, ipcMain, screen } from 'electron';
 import { join } from 'path';
 
 import { getMainWindow } from '/@/main/index';
@@ -17,10 +17,12 @@ const DEFAULT_DESKTOP_LYRICS_CONFIG: DesktopLyricsConfig = {
     enabled: false,
     fontColor: '#ffffff',
     fontSize: 22,
+    lineLeadTimeMs: 800,
 };
 
 let currentDesktopLyricsConfig: DesktopLyricsConfig = DEFAULT_DESKTOP_LYRICS_CONFIG;
 let desktopLyricsLocked = false;
+let desktopLyricsHoverReveal = false;
 let desktopLyricsCloseWasUserInitiated = false;
 let desktopLyricsWindow: BrowserWindow | null = null;
 let removeMainWindowClosedListener: (() => void) | null = null;
@@ -94,17 +96,35 @@ const sendConfigToDesktopLyrics = () => {
     desktopLyricsWindow.webContents.send('desktop-lyrics-config', currentDesktopLyricsConfig);
 };
 
-const setLocked = (locked: boolean) => {
-    desktopLyricsLocked = locked;
-
+// A locked window is normally mouse-through. `forward` keeps mouse-move events
+// reaching the page (for hover states) while clicks pass through; it is
+// Windows/macOS only and Linux ignores it. While locked, hovering the window can
+// temporarily restore interactivity (`desktopLyricsHoverReveal`) so the unlock
+// control can be clicked; the authoritative `desktopLyricsLocked` flag is never
+// changed by that hover reveal.
+const applyMouseIgnore = () => {
     if (desktopLyricsWindow === null || desktopLyricsWindow.isDestroyed()) {
         return;
     }
 
-    // `forward` keeps mouse-move events reaching the page (for hover states) while
-    // clicks pass through. It is Windows/macOS only; Linux ignores it.
-    desktopLyricsWindow.setIgnoreMouseEvents(locked, { forward: true });
+    const ignore = desktopLyricsLocked && !desktopLyricsHoverReveal;
+    desktopLyricsWindow.setIgnoreMouseEvents(ignore, { forward: true });
+};
+
+const setLocked = (locked: boolean) => {
+    desktopLyricsLocked = locked;
+
+    if (!locked) {
+        desktopLyricsHoverReveal = false;
+    }
+
+    applyMouseIgnore();
     notifyWindowState();
+};
+
+const setHoverReveal = (revealed: boolean) => {
+    desktopLyricsHoverReveal = revealed;
+    applyMouseIgnore();
 };
 
 const sendToMainWindow = (channel: string) => {
@@ -117,6 +137,28 @@ const sendToMainWindow = (channel: string) => {
     mainWindow.webContents.send(channel);
 };
 
+const DESKTOP_LYRICS_WIDTH = 720;
+const DESKTOP_LYRICS_HEIGHT = 200;
+const DESKTOP_LYRICS_TOP_MARGIN = 16;
+
+// Initial position: top-center of the display the main window currently sits on,
+// below that display's top system UI (workArea already excludes a top menu bar /
+// taskbar; the margin just keeps it off the very edge). No position memory — the
+// requirement is a sensible first-open default, not persistence.
+const getInitialBounds = () => {
+    const mainWindow = getMainWindow();
+    const display =
+        mainWindow && !mainWindow.isDestroyed()
+            ? screen.getDisplayMatching(mainWindow.getBounds())
+            : screen.getPrimaryDisplay();
+    const { workArea } = display;
+
+    return {
+        x: Math.round(workArea.x + (workArea.width - DESKTOP_LYRICS_WIDTH) / 2),
+        y: Math.round(workArea.y + DESKTOP_LYRICS_TOP_MARGIN),
+    };
+};
+
 const createDesktopLyricsWindow = () => {
     if (isDesktopLyricsWindowUsable()) {
         return;
@@ -127,14 +169,17 @@ const createDesktopLyricsWindow = () => {
     // can never desync the renderer or leak a previous window's close reason into
     // this one.
     desktopLyricsLocked = false;
+    desktopLyricsHoverReveal = false;
     desktopLyricsCloseWasUserInitiated = false;
 
     const window = new BrowserWindow({
         alwaysOnTop: currentDesktopLyricsConfig.alwaysOnTop,
         frame: false,
         hasShadow: false,
-        height: 160,
-        resizable: false,
+        height: DESKTOP_LYRICS_HEIGHT,
+        minHeight: 140,
+        minWidth: 480,
+        resizable: true,
         show: false,
         skipTaskbar: true,
         transparent: true,
@@ -144,7 +189,8 @@ const createDesktopLyricsWindow = () => {
             preload: join(__dirname, '../preload/index.js'),
             sandbox: true,
         },
-        width: 600,
+        width: DESKTOP_LYRICS_WIDTH,
+        ...getInitialBounds(),
     });
 
     desktopLyricsWindow = window;
@@ -235,6 +281,9 @@ ipcMain.on('desktop-lyrics-control', (_event, action: DesktopLyricsControlAction
             break;
         case 'previous':
             sendToMainWindow('renderer-player-previous');
+            break;
+        case 'set-locked-hover':
+            setHoverReveal(action.hovered);
             break;
         case 'toggle-play':
             sendToMainWindow('renderer-player-play-pause');

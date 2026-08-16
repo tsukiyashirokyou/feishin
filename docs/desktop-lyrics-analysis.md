@@ -1114,3 +1114,231 @@ const onWindowState = (state: DesktopLyricsWindowState) => {
 **验证**：
 - 静态：`pnpm run typecheck`、`pnpm run lint-code`、`pnpm run lint-styles`、`pnpm run build:electron` 全部通过。
 - 运行时：`pnpm dev` 启动成功、主窗口正常加载（无桌面歌词相关报错）。UI 点击类测试（Enable/Disable/Unlock/持久化共 23 项）需人工在 `pnpm dev` 下复核——本环境无法自动完成 UI 操作。
+
+---
+
+# Runtime Bug Fix Round 2
+
+> 本阶段只修复运行时缺陷（BUG-01/02/03/05）、调查 BUG-04、记录 UX-01。**未扩展任何新功能**。
+> 原则沿用 §6：最小侵入、不重构 player/settings、不新增依赖、不创建新状态系统、不改歌词获取/解析逻辑（BUG-01 无需改动，见下）。
+
+## BUG-01：打开桌面歌词时当前歌曲显示「无歌词」
+
+**根因（真正根因，非 UI 补丁）**
+
+歌词桥 `use-desktop-lyrics-lyrics-bridge.ts` 只在**歌曲变化**时计算并 `sendLyrics(...)`（500ms 防抖 → `useQuery` → 解析 → 推送）。主进程 `desktop-lyrics-lyrics` 中继在**窗口未打开时直接丢弃 payload**（`desktop-lyrics/index.ts` 判空 `return`）。于是：
+
+```
+主窗口启动 → 歌词桥挂载 → 当前歌已存在 → 拉取/解析/推送一次
+  → 但此时 desktopLyricsWindow === null → main 丢弃
+用户打开 Desktop Lyrics → did-finish-load → 只发 config + window-state
+  → 无任何机制把「当前歌的歌词」重新推给新窗口
+  → 桌面歌词侧 lyrics 镜像 store 保持 EMPTY → 显示「无歌词」
+  → 必须切歌（触发新的 sendLyrics）才恢复
+```
+
+即：歌词桥**没有 window-state 监听**，不像播放状态桥 `use-desktop-lyrics-main-bridge.ts` 那样在 `open:true` 时主动补推全量快照。这不是歌词获取/解析逻辑的缺陷，而是「镜像窗口打开时机」的缺失。
+
+**修复（最小侵入，仅改歌词桥一个文件）**
+
+`src/renderer/features/desktop-lyrics/use-desktop-lyrics-lyrics-bridge.ts`：
+
+1. 新增 `lastLyricsRef = useRef<DesktopLyricsData>(EMPTY_LYRICS)`（`:42`），缓存「最近一次解析结果」。
+2. 计算 effect 末尾把结果写入 `lastLyricsRef.current = lyricsData` 再 `sendLyrics`（`:132`）。
+3. 新增 window-state 监听 effect（`:145-148`）：收到 `state.open === true` 时 `sendLyrics(lastLyricsRef.current)`，把缓存歌词补推给刚打开的窗口。
+
+**为何不是重新 fetch**：歌词早已由 React Query 拉取并缓存（与全屏歌词同 key 共享），窗口打开时只需补推缓存结果，无需重复请求。fetch 层、解析层、`computeSelectedFromResult`/`getDisplayOffset`/`getLyricsLayers` 全部**未改动**。
+
+## BUG-02：无歌词状态不响应 Font Size / Font Color
+
+**根因**
+
+`desktop-lyrics.css` 的 `.desktop-lyrics-empty` 硬编码 `font-size: 16px` 与 `color: rgb(255 255 255 / 70%)`，**未消费** `--desktop-lyrics-font-size` / `--desktop-lyrics-font-color` CSS 变量。config 镜像链路本身是通的（Font Size/Color 变更 → config bridge → main 中继 → `desktop-lyrics-config.store.ts` → `DesktopLyricsApp` 的 `rootStyle` 更新 CSS 变量），只是空状态没引用变量。
+
+**修复（纯 CSS）**
+
+`desktop-lyrics.css:73-75` 改为消费变量：
+
+```css
+.desktop-lyrics-empty {
+    font-size: var(--desktop-lyrics-font-size, 22px);
+    color: var(--desktop-lyrics-font-color, #fff);
+    text-shadow: 0 1px 3px rgb(0 0 0 / 60%);
+}
+```
+
+有歌词态样式（`.desktop-lyrics-line-active` 等）**未改动**，不破坏现有歌词样式。
+
+## BUG-03：关闭 Desktop Lyrics 后 Settings 状态不立即同步
+
+**根因（store 已正确，UI 未反映）**
+
+逐项确认结果：
+
+1. 窗口关闭后 store 的 `enabled` **确实已变 false**：控制栏 Close → `desktop-lyrics-control {close}` → main `closeDesktopLyricsWindow(true)` → `closed` 里 `wasUserInitiated=true` → `notifyWindowState({open:false})` → 主窗口 `use-desktop-lyrics-config-bridge.ts:46` 的条件（`if (state.open || !enabled) return`，Round 1 已修正）命中 → `setSettings(enabled:false)`。store 权威态正确。
+2. **UI 没变**：`desktop-lyrics-settings.tsx` 的 Enable `Switch` 用**非受控 `defaultChecked`**，只读初始值，后续 `settings.enabled` 变化不会更新 DOM，需卸载重挂载（离开再回 Settings）才读回。
+3. 因此这不是 state 同步问题，而是**受控/非受控**问题。
+
+**修复（最小侵入，仅改 Enable 一个 Switch）**
+
+`src/renderer/features/settings/components/general/desktop-lyrics-settings.tsx:40`：`defaultChecked={settings.enabled}` → `checked={settings.enabled}`（受控）。`onChange` 仍走 `updateSetting({ enabled: ... })`。
+
+- 仅改 Enable：`alwaysOnTop` 无外部同步源（只有用户在本组件内切换），保持 `defaultChecked` 即可。
+- 仓库其余设置 Switch 均用 `defaultChecked`（如 `lyric-settings.tsx`），但因它们无「外部回写」场景，无需改动；Enable 是唯一需要受控的项。
+
+## BUG-04：Desktop Lyrics 与原有 Lyrics UI 的时序差异（调查结论，未修改）
+
+**两边实际使用的 timestamp 值 —— 无稳定偏差**
+
+- 原 Lyrics：`SynchronizedLyrics` → RAF 循环读 `useTimestampStoreBase.getState().timestamp`（秒，250ms 量化）→ `timeInMs = timestamp*1000 + delayMsRef.current`，其中 `delayMsRef.current = offsetMs`（来自 `getDisplayOffset`，`synchronized-lyrics.tsx:134-135`、`use-synchronized-lyrics-base.ts:54/185`）。
+- Desktop Lyrics：`activeIndex = getCurrentLyricIndex(normalizedLyrics, timestamp*1000 + offsetMs)`，其中 `timestamp` 为镜像（经 `desktop-lyrics-state` 4Hz 下发），`offsetMs` 同样来自 `getDisplayOffset`（`use-desktop-lyrics-lyrics-bridge.ts`）。
+
+**两者 timestamp 值相同、offset 相同**，无固定数值偏差。
+
+**高亮阈值（activeIndex 时间点）—— 一致**
+
+- 原 Lyrics 的行高亮（`LINE_ACTIVE_CLASS`）阈值是 `isVisuallyActive = playbackTimeSec >= line.time`（`lyrics-animation-engine.ts:607-609`，line-sync 模式），其中 `playbackTimeSec ≈ currentTimeSec`（RAF 内 `eventCreationTime = Date.now()`，`timeOffsetSec ≈ 0`）。
+- `getCurrentLyricIndex`（`lyrics-utils.ts:40-54`）返回「最后一条 `timeInMs >= startMs` 的行」，阈值与 `isVisuallyActive` **完全一致**。
+
+即：**高亮切换的时间点两边相同**，不存在「Desktop Lyrics 时间轴晚一拍」的数值问题。
+
+**真正的差异来源（视觉层，非数据层）**
+
+1. **滚动提前量 `lineLeadTimeMs`（默认 800ms）**：原 Lyrics 的滚动目标用 `isScrollCandidate = playbackTimeSec >= time - leadTimeSec`（`lyrics-animation-engine.ts:573/605`，`DEFAULT_LINE_LEAD_TIME_MS = 800`），即**提前 800ms 把下一行滚到中间**；行高亮仍按 `>= time` 精确触发。Desktop Lyrics 的 `scrollIntoView` 在 `activeIndex`（精确当前行）变化时才触发，**无提前量**。这是「Desktop Lyrics 看起来晚一拍」的**主因**——两边的居中行相差约 800ms（一拍量级）。
+2. **更新频率**：原 Lyrics 在 RAF（~60fps）内每帧读最新量化 timestamp 并命令式改 DOM；Desktop Lyrics 经 IPC（4Hz）+ React setState + 渲染，高亮生效晚约数 ms～最多一个快照间隔。量级远小于 800ms。
+3. **平滑滚动动画**：两边都平滑滚动，但实现与时长不同（`animateLyricsScrollTo` vs `scrollIntoView({behavior:'smooth'})`）。
+
+**结论与是否修复**
+
+- **存在**的是「滚动提前量 + 更新频率」造成的**视觉/滚动表现差异**，**不存在** timestamp 数值偏差或 activeIndex 阈值偏差。
+- 按 Round 2 禁止项（不得加时间补偿、不得改时间轴、不得改 `getCurrentLyricIndex`、不得改主窗口歌词行为），**本轮不修改**。
+- 若将来追求与原 Lyrics 视觉对齐，正确方向是把 `lineLeadTimeMs` 的滚动提前量移植到 Desktop Lyrics 的滚动定位（属**功能增强**，非 bug），不在本轮范围。
+
+## BUG-05：Desktop Lyrics 右侧垂直滚动条
+
+**根因**
+
+`.desktop-lyrics-scroll` 用 `overflow-y: auto` 承载歌词纵向滚动，歌词超过窗口高度（160px）时 Chromium 在容器右侧绘制滚动条。透明悬浮窗不应暴露该滚动条。
+
+**修复（隐藏滚动条、保留滚动能力，非 `overflow:hidden`）**
+
+`desktop-lyrics.css:32` 在 `.desktop-lyrics-scroll` 增加 `scrollbar-width: none`（Firefox），并新增 `.desktop-lyrics-scroll::-webkit-scrollbar { display: none }`（Chromium/Electron）。
+
+- 保持 `overflow-y: auto`，故 `scrollIntoView({behavior:'smooth', block:'center'})`、歌词自动滚动**不受影响**。
+- `-webkit-app-region: drag`（窗口拖动）与控制栏 `no-drag` 交互不受影响。
+
+## UX-01（后续改进，本轮不实现）
+
+锁定后整窗 `setIgnoreMouseEvents(true)` 穿透，窗口内控制栏随 `{!locked}` 隐藏，解锁只能回主窗口 Settings。期望在锁定态仍提供一个可发现的解锁入口（参考网易云桌面歌词）。因涉及 `setIgnoreMouseEvents` 与「锁定时穿透语义」的技术设计取舍（穿透后窗口内无法点击，需额外的非穿透 hover 交互区或快捷键），本轮只记录、不改动。
+
+## Round 2 修改文件清单
+
+| 文件 | 修改 | 原因 |
+| --- | --- | --- |
+| `src/renderer/features/desktop-lyrics/use-desktop-lyrics-lyrics-bridge.ts` | 新增 `lastLyricsRef` + window-state 监听补推 | BUG-01：开窗即显示当前歌词 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics.css` | 空状态消费 CSS 变量 | BUG-02：空状态响应字号/颜色 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics.css` | `.desktop-lyrics-scroll` 隐藏滚动条 | BUG-05：消除透明窗滚动条 |
+| `src/renderer/features/settings/components/general/desktop-lyrics-settings.tsx` | Enable `defaultChecked` → `checked` | BUG-03：关闭后设置立即回 OFF |
+
+**未修改**：`player.store.ts` / `timestamp.store.ts` / `settings.store.ts` / `use-main-player-listener.tsx` / `preload/*` / `main/index.ts` / `electron.vite.config.ts` / 歌词获取解析层（`lyrics-api.ts`/`lyrics-utils.ts`/`lyrics-animation-engine.ts`/`synchronized-lyrics.tsx`）——均未被 BUG-01/02/03/05 证明需要改动。
+
+## Round 2 自动化验证（已实际通过，本机 Windows）
+
+- `pnpm run typecheck`（node + web）✅
+- `pnpm run lint-code`（eslint `--max-warnings=0`）✅
+- `pnpm run lint-styles`（stylelint `--max-warnings=0`）✅
+- `pnpm run build:electron` ✅（51.71s）
+
+## Round 2 运行时验证（待人工复核，本环境未跑 dev 实例的 UI 操作）
+
+- BUG-01：播放一首有同步歌词的歌 → Settings 打开 Desktop Lyrics → 立即显示当前歌词（无需切歌）。
+- BUG-02：无歌词曲目 → 改 Font Size / Font Color → 空状态字号/颜色即时变化。
+- BUG-03：Enable ON → 控制栏 Close → Settings 的 Enable 立即回 OFF（不离开页面）。
+- BUG-05：长歌词滚动时右侧无滚动条，但自动居中滚动仍工作。
+- BUG-04：至少做一次原 Lyrics 与 Desktop Lyrics 的同步对比，确认高亮切换时间点一致、差异仅滚动提前量。
+- 上述均为**待人工复核**，未实际运行，不写 PASS。
+
+---
+
+# Phase 6C-1 — Window / Control Bar / Lyrics Scroll UX Polish
+
+> 本阶段只处理五项 UX 打磨：① 锁定态直接解锁入口；② 窗口可缩放 + 歌词换行/截断修复；③ 移植 `lineLeadTimeMs` 提前滚动；④ 控制栏移到歌词上方；⑤ 多显示器跟随主窗口。**不实现 6C-2（设置/入口）**。
+> 原则沿用 §6：最小侵入、不新增依赖、不新建 store/WindowManager、不实现 seek、不改 timestamp/IPC/`getCurrentLyricIndex`、不提前高亮、不加时间补偿、不改主窗口歌词行为。
+
+## 需求 1：锁定态直接解锁入口
+
+### 实现前必须回答的 5 个问题
+
+1. **为什么 `setIgnoreMouseEvents(true)` 下不能直接点击 Unlock？**
+   `setIgnoreMouseEvents(true, {forward:true})` 是**窗口级** OS 设置：整窗对鼠标点击穿透，点击被 OS 路由到窗口背后的对象，任何 DOM 元素（含 HTML 解锁按钮）都收不到 click。`forward:true` 只转发鼠标**移动**事件（hover），**不转发点击**，且 Electron 无 per-region 例外。
+2. **选择哪种解锁方案？**
+   锁定态 **hover 临时恢复交互**：利用 `forward:true` 转发的 `mousemove` 检测 hover，向主进程发送 `set-locked-hover {hovered:true}` → 临时 `setIgnoreMouseEvents(false)` → 显示仅含解锁按钮的控制栏；鼠标移出时 `{hovered:false}` → 恢复 `setIgnoreMouseEvents(true)`。**权威锁状态 `desktopLyricsLocked` 始终不变**。
+3. **为什么是当前仓库最小侵入的方案？**
+   只新增一个 `desktop-lyrics-control` 的 action 类型（`set-locked-hover`），复用既有 channel，**不新增** lock/unlock 冗余 channel、不新增 store、不改 `desktopLyricsLocked` 权威、不改 Settings 解锁入口。窗口穿透语义仅在 hover 瞬间临时解除，移出即恢复，未破坏「歌词主体保持 mouse-through」。
+4. **对 Windows/macOS/Linux 的影响？**
+   Windows/macOS：`forward` 生效 → `mousemove` 被转发 → hover 触发临时恢复，可点击解锁。Linux：`forward` 被忽略（§10 已记录）→ 锁定后无 `mousemove` → hover 恢复**不可用**，回退到主窗口 Settings「Unlock」。（已作为平台差异记录，非遗漏。）
+5. **是否影响当前 drag / hover / control bar？**
+   解锁态：drag / hover / 全量控制栏**完全不变**。锁定态：hover 时临时显示**仅解锁按钮**的控制栏（其余 prev/play/next/close 隐藏，因锁定态无播放控制语义），移出即恢复穿透。整窗 `-webkit-app-region: drag` 不受影响（锁定态本无 mouse-down 拖拽）。
+
+### 实现
+
+- **main**（`src/main/features/core/desktop-lyrics/index.ts`）：新增模块态 `desktopLyricsHoverReveal`；抽取 `applyMouseIgnore()`（`ignore = desktopLyricsLocked && !desktopLyricsHoverReveal`）；`setLocked` 改为调用 `applyMouseIgnore` 并在 `!locked` 时清空 hover reveal；新增 `setHoverReveal(revealed)`；`createDesktopLyricsWindow` 重置 `desktopLyricsHoverReveal = false`；`desktop-lyrics-control` switch 新增 `case 'set-locked-hover'`。
+- **types**（`desktop-lyrics.ts`）：`DesktopLyricsControlAction` 新增 `{ hovered: boolean; type: 'set-locked-hover' }`。
+- **control bar**（`desktop-lyrics-control-bar.tsx`）：新增 `locked`/`onUnlock` props；`locked` 时仅渲染 `RiLockUnlockFill` 解锁按钮。
+- **app**（`desktop-lyrics-app.tsx`）：root 加 `onMouseMove`/`onMouseLeave`；锁定态 `onMouseMove`（`forward` 转发）→ 首次发 `set-locked-hover {hovered:true}`，`onMouseLeave` → `{hovered:false}`；用 `lockedHoverRef` 防重复发送；`handleLock`/`handleUnlock`/window-state echo 均重置 `lockedHoverRef` 以刷新会话。
+
+## 需求 2：窗口可缩放 + 歌词换行/截断修复
+
+- **window**（`desktop-lyrics/index.ts`）：`resizable: true`；新增 `minWidth: 480`、`minHeight: 140`；默认 `width: 720`、`height: 200`（较 600×160 更宽，减少长句不必要的换行）。抽常量 `DESKTOP_LYRICS_WIDTH/HEIGHT`。
+- **CSS**（`desktop-lyrics.css`）：`.desktop-lyrics-line-main`/`.desktop-lyrics-line-translation` 增加 `overflow-wrap: break-word`；`.desktop-lyrics-line` 增加 `max-width: 100%`、`padding: 4px 24px`。**未**使用 `white-space: nowrap` + `overflow: hidden` 掩盖截断；保留 `white-space: pre-line`（`_BREAK_`→`\n` 语义）。
+
+## 需求 3：移植 `lineLeadTimeMs` 提前滚动（提前滚动 ≠ 提前高亮）
+
+- **config 传递**：`DesktopLyricsConfig` 新增 `lineLeadTimeMs: number`（默认 800）；config bridge 从 `useLyricsSettings()` 读 `lineLeadTimeMs` 并入 config（`use-desktop-lyrics-config-bridge.ts`）；main `DEFAULT_DESKTOP_LYRICS_CONFIG` 与 config store 默认均加 `800`。
+- **滚动目标**（`desktop-lyrics-app.tsx`）：新增 `scrollIndex = getCurrentLyricIndex(normalizedLyrics, timestamp*1000 + offsetMs + lineLeadTimeMs)`，`scrollIntoView` 定位到 `scrollIndex`；**高亮仍用 `activeIndex`（精确时间点）不变**。这是对原 Lyrics `isScrollCandidate = playbackTimeSec >= time - leadTimeSec` 的最小移植：把「下一行提前滚到中间」，而高亮阈值 `>= time` 精确不变。
+- **未改**：`getCurrentLyricIndex`、timestamp/IPC、`getDisplayOffset`、任何时间轴数据。仅滚动目标加了 `+ lineLeadTimeMs`。
+
+## 需求 4：控制栏移到歌词上方（正常布局，非 absolute 覆盖）
+
+- `desktop-lyrics-root` 改为 `flex-direction: column`；`.desktop-lyrics-control-bar` 从 `position:absolute; bottom:8px` 改为**顶部 in-flow**（`align-self: center` + `margin-top: 4px`，`flex-shrink: 0`），不再覆盖歌词；`.desktop-lyrics-scroll` 改 `flex: 1` + `min-height: 0`（承载剩余高度、内部滚动）；`.desktop-lyrics-empty` 改 flex 容器在剩余空间居中。hover 显示/隐藏仍由 `.desktop-lyrics-root:hover .desktop-lyrics-control-bar` 控制。
+- **未用** `position: absolute` 把控制栏压歌词上；采用 flex/gap/padding 正常布局。
+
+## 需求 5：多显示器默认定位（跟随主窗口所在屏，workArea 上方中央）
+
+- **main**（`desktop-lyrics/index.ts`）：导入 `screen`；新增 `getInitialBounds()`：`screen.getDisplayMatching(getMainWindow().getBounds())`（主窗口不可用时回退 `getPrimaryDisplay()`），取该屏 `workArea`，`x = workArea.x + (workArea.width - width)/2`、`y = workArea.y + 16`（上方中央，`workArea` 已排除顶部菜单栏/任务栏，16px 余量避免贴边）；`new BrowserWindow({...})` 展开 `...getInitialBounds()` 设 `x`/`y`。
+- **无位置记忆**（需求明确不持久化）；`getBounds()` 与 `workArea` 均为 DIP，无 DPI 缩放偏差；主窗口跨两屏时 `getDisplayMatching` 返回重叠最大的屏。
+
+## Phase 6C-1 修改文件清单
+
+| 文件 | 修改 | 需求 |
+| --- | --- | --- |
+| `src/shared/types/desktop-lyrics.ts` | config 加 `lineLeadTimeMs`；control action 加 `set-locked-hover` | 1、3 |
+| `src/main/features/core/desktop-lyrics/index.ts` | `screen` 导入、`applyMouseIgnore`/`setHoverReveal`、可缩放+min 尺寸+默认 720×200、`getInitialBounds`、switch 新 case | 1、2、5 |
+| `src/renderer/features/desktop-lyrics/use-desktop-lyrics-config-bridge.ts` | 读 `useLyricsSettings().lineLeadTimeMs` 入 config | 3 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-config.store.ts` | 默认 `lineLeadTimeMs: 800` | 3 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-control-bar.tsx` | `locked`/`onUnlock` props，锁定态仅解锁按钮 | 1 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-app.tsx` | 列布局、`scrollIndex` 提前滚动、hover 恢复交互、控制栏上移 | 1、3、4 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics.css` | 列布局、控制栏顶部 in-flow、`overflow-wrap`、空状态居中 | 2、4 |
+
+**未修改**：`preload/desktop-lyrics.ts`（`control` 已透传任意 action）、`settings.store.ts`、`player.store.ts`、`timestamp.store.ts`、`lyrics-utils.ts`/`lyrics-api.ts`/`lyrics-animation-engine.ts`/`synchronized-lyrics.tsx`、`main/index.ts`、`electron.vite.config.ts`。均未被五项需求证明需要改动。
+
+## 偏差记录
+
+- **union 类型排序副作用**：`sort-object-types` 强制 `set-locked-hover` 对象字段为 `{ hovered; type }`，导致 `sort-union-types` 把该成员排在 union **首位**（在 `{ type:'close' }` 之前），破坏了按 `type` 值字母序的直觉顺序。此为 perfectionist 排序规则的既有行为，非设计意图；语义不受影响。
+- **默认窗口尺寸 720×200**：较原 600×160 增加，属需求 2 的「加宽减少换行」意图，非偏差。
+
+## Phase 6C-1 自动化验证（已实际通过，本机 Windows）
+
+- `pnpm run typecheck`（node + web）✅
+- `pnpm run lint-code`（eslint `--max-warnings=0`）✅
+- `pnpm run lint-styles`（stylelint `--max-warnings=0`，含 4 处属性序自动修复）✅
+- `pnpm run build:electron` ✅（50.92s，`out/renderer/desktop-lyrics.html` + `desktop-lyrics-*.js`/`.css` 已生成）
+
+## Phase 6C-1 运行时验证（待人工复核，本环境未跑 dev 实例的 UI 操作）
+
+- 需求 1：锁定桌面歌词 → 鼠标 hover 窗口 → 出现解锁按钮 → 点击解锁 → 控制栏恢复全量；鼠标移出（未点击）→ 恢复穿透。
+- 需求 2：拖拽窗口边缘可缩放；拉宽后长歌词行不再不必要换行；缩到最小尺寸仍可用。
+- 需求 3：播放含同步歌词曲目 → 观察下一行在当前行被唱到之前约 800ms 滚到中间；高亮仍在精确时间点切换（不提前）。
+- 需求 4：hover 时控制栏出现在歌词**上方**，不遮挡当前行；非 hover 时弱化/隐藏。
+- 需求 5：主窗口在副屏时，桌面歌词默认开在该副屏上方中央；主窗口在主板屏时开在主板屏上方中央。
+- 上述均为**待人工复核**，未实际运行，不写 PASS。

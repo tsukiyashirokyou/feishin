@@ -1,6 +1,7 @@
 import {
     RiCloseLine,
     RiLockFill,
+    RiLockUnlockFill,
     RiPauseFill,
     RiPlayFill,
     RiSkipBackFill,
@@ -13,7 +14,9 @@ import { DesktopLyricsControlAction } from '/@/shared/types/desktop-lyrics';
 import { PlayerStatus } from '/@/shared/types/types';
 
 interface DesktopLyricsControlBarProps {
+    locked: boolean;
     onLock: () => void;
+    onUnlock: () => void;
 }
 
 const sendControl = (action: DesktopLyricsControlAction) => {
@@ -24,12 +27,27 @@ const sendControl = (action: DesktopLyricsControlAction) => {
 // `-webkit-app-region: drag`, so this bar and its buttons are explicitly
 // `no-drag` (in CSS) to stay clickable. Player controls are sent as intents via
 // `desktop-lyrics-control`; the main process relays them to the main window's
-// existing `renderer-player-*` channels. The window is only interactive while
-// unlocked, so the bar always renders the "lock" action — unlocking from within
-// is impossible once the window is click-through (see Phase 6A notes).
-export const DesktopLyricsControlBar = ({ onLock }: DesktopLyricsControlBarProps) => {
+// existing `renderer-player-*` channels. While locked the window is mouse-through
+// except for the transient hover reveal, so the bar collapses to a single
+// "unlock" action — the player controls are irrelevant until the window is
+// interactive again.
+export const DesktopLyricsControlBar = ({
+    locked,
+    onLock,
+    onUnlock,
+}: DesktopLyricsControlBarProps) => {
     const status = useDesktopLyricsStore((state) => state.status);
     const isPlaying = status === PlayerStatus.PLAYING;
+
+    if (locked) {
+        return (
+            <div className="desktop-lyrics-control-bar">
+                <button className="desktop-lyrics-control-button" onClick={onUnlock} type="button">
+                    <RiLockUnlockFill size={18} />
+                </button>
+            </div>
+        );
+    }
 
     return (
         <div className="desktop-lyrics-control-bar">

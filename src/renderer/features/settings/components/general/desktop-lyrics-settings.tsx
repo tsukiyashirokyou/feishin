@@ -37,7 +37,7 @@ export const DesktopLyricsSettings = memo(() => {
             control: (
                 <Switch
                     aria-label="Enable desktop lyrics"
-                    defaultChecked={settings.enabled}
+                    checked={settings.enabled}
                     onChange={(e) => updateSetting({ enabled: e.currentTarget.checked })}
                 />
             ),

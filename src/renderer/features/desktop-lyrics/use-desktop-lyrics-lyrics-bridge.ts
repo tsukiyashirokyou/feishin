@@ -39,6 +39,7 @@ export const useDesktopLyricsLyricsBridge = () => {
     const [pendingSongId, setPendingSongId] = useState<string | undefined>(undefined);
     const previousSongIdRef = useRef<string | undefined>(undefined);
     const lyricsFetchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const lastLyricsRef = useRef<DesktopLyricsData>(EMPTY_LYRICS);
 
     // Debounce track changes so rapid skipping doesn't fetch lyrics for every
     // intermediate song (mirrors the fullscreen lyrics component). Clear
@@ -121,11 +122,36 @@ export const useDesktopLyricsLyricsBridge = () => {
                 ? selected.lyrics
                 : undefined;
 
-        sendLyrics({
+        const lyricsData: DesktopLyricsData = {
             lyrics,
             offsetMs: lyrics ? offsetMs : 0,
             pronunciationLyrics: pronunciationLyric?.synced ? pronunciationLyric.lyrics : undefined,
             translationLyrics: translationLyric?.synced ? translationLyric.lyrics : undefined,
-        });
+        };
+
+        lastLyricsRef.current = lyricsData;
+        sendLyrics(lyricsData);
     }, [data, isWaitingToFetchLyrics, preferLocalLyrics]);
+
+    // Re-push the current song's lyrics when the desktop lyrics window opens so a
+    // freshly-opened window shows lyrics immediately. The lyrics are otherwise only
+    // pushed on song change, and the main process drops pushes made while the
+    // window is closed.
+    useEffect(() => {
+        if (!isElectron()) {
+            return;
+        }
+
+        const removeWindowStateListener = window.api.desktopLyricsListener.onWindowState(
+            (state) => {
+                if (state.open) {
+                    sendLyrics(lastLyricsRef.current);
+                }
+            },
+        );
+
+        return () => {
+            removeWindowStateListener();
+        };
+    }, []);
 };
