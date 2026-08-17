@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import isElectron from 'is-electron';
 import { AnimatePresence, motion } from 'motion/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -41,11 +42,17 @@ import { usePlayerEvents } from '/@/renderer/features/player/audio-player/hooks/
 import { useIsRadioActive } from '/@/renderer/features/radio/hooks/use-radio-player';
 import { ComponentErrorBoundary } from '/@/renderer/features/shared/components/component-error-boundary';
 import { queryClient } from '/@/renderer/lib/react-query';
-import { useLyricsSettings, usePlayerSong } from '/@/renderer/store';
+import {
+    useDesktopLyricsSettings,
+    useLyricsSettings,
+    usePlayerSong,
+    useSettingsStoreActions,
+} from '/@/renderer/store';
 import { ActionIcon } from '/@/shared/components/action-icon/action-icon';
 import { Center } from '/@/shared/components/center/center';
 import { Group } from '/@/shared/components/group/group';
 import { Spinner } from '/@/shared/components/spinner/spinner';
+import { Stack } from '/@/shared/components/stack/stack';
 import { Text } from '/@/shared/components/text/text';
 import { useLocalStorage } from '/@/shared/hooks/use-local-storage';
 import { LyricsOverride } from '/@/shared/types/domain-types';
@@ -71,6 +78,8 @@ export const Lyrics = ({ fadeOutNoLyricsMessage = true, settingsKey = 'default' 
         translationTargetLanguage,
     } = useLyricsSettings();
     const { t } = useTranslation();
+    const desktopLyrics = useDesktopLyricsSettings();
+    const { setSettings } = useSettingsStoreActions();
     const [index, setIndexState] = useState(0);
     const [translatedLyrics, setTranslatedLyrics] = useState<null | string>(null);
     const [showTranslation, setShowTranslation] = useState(false);
@@ -486,19 +495,49 @@ export const Lyrics = ({ fadeOutNoLyricsMessage = true, settingsKey = 'default' 
         openLyricsSettingsModal(settingsKey);
     };
 
+    // The desktop lyrics window is opened/closed declaratively by the main
+    // process from the `enabled` setting, so toggling the setting is the whole
+    // action — no direct window call here.
+    const handleToggleDesktopLyrics = useCallback(() => {
+        setSettings({
+            lyrics: { desktopLyrics: { ...desktopLyrics, enabled: !desktopLyrics.enabled } },
+        });
+    }, [desktopLyrics, setSettings]);
+
     return (
         <ComponentErrorBoundary>
             <div className={styles.lyricsContainer}>
-                <ActionIcon
-                    className={styles.settingsIcon}
-                    icon="settings2"
-                    iconProps={{ size: 'lg' }}
-                    onClick={handleOpenSettings}
-                    pos="absolute"
-                    right={0}
-                    top={0}
-                    variant="subtle"
-                />
+                <Stack className={styles.settingsIcon} gap={4} pos="absolute" right={0} top={0}>
+                    <ActionIcon
+                        icon="settings2"
+                        iconProps={{ size: 'lg' }}
+                        onClick={handleOpenSettings}
+                        variant="subtle"
+                    />
+                    {isElectron() ? (
+                        <ActionIcon
+                            aria-label={
+                                desktopLyrics.enabled
+                                    ? t('setting.desktopLyricsClose')
+                                    : t('setting.desktopLyricsOpen')
+                            }
+                            icon="appWindow"
+                            iconProps={
+                                desktopLyrics.enabled
+                                    ? { color: 'primary', size: 'lg' }
+                                    : { size: 'lg' }
+                            }
+                            onClick={handleToggleDesktopLyrics}
+                            tooltip={{
+                                label: desktopLyrics.enabled
+                                    ? t('setting.desktopLyricsClose')
+                                    : t('setting.desktopLyricsOpen'),
+                                openDelay: 0,
+                            }}
+                            variant="subtle"
+                        />
+                    ) : null}
+                </Stack>
                 {isLoadingLyrics ? (
                     <Spinner container />
                 ) : (

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useDesktopLyricsConfigStore } from './desktop-lyrics-config.store';
 import { DesktopLyricsControlBar } from './desktop-lyrics-control-bar';
 import { useDesktopLyricsLyricsStore } from './desktop-lyrics-lyrics.store';
+import { DesktopLyricsSettingsPanel } from './desktop-lyrics-settings-panel';
 import { useDesktopLyricsStore } from './desktop-lyrics.store';
 
 import i18n from '/@/i18n/i18n';
@@ -27,8 +28,10 @@ export const DesktopLyricsApp = () => {
     const lyricsData = useDesktopLyricsLyricsStore();
     const fontColor = useDesktopLyricsConfigStore((state) => state.fontColor);
     const fontSize = useDesktopLyricsConfigStore((state) => state.fontSize);
+    const layout = useDesktopLyricsConfigStore((state) => state.layout);
     const lineLeadTimeMs = useDesktopLyricsConfigStore((state) => state.lineLeadTimeMs);
     const [locked, setLocked] = useState(false);
+    const [settingsOpen, setSettingsOpen] = useState(false);
     const lockedHoverRef = useRef(false);
     const [isResizing, setIsResizing] = useState(false);
 
@@ -53,6 +56,7 @@ export const DesktopLyricsApp = () => {
     const handleLock = useCallback(() => {
         lockedHoverRef.current = false;
         setLocked(true);
+        setSettingsOpen(false);
         window.api.desktopLyrics.control({ type: 'lock' });
     }, []);
 
@@ -196,26 +200,126 @@ export const DesktopLyricsApp = () => {
         scrollToAnchor();
     }, [isResizing, scrollIndex, scrollToAnchor]);
 
+    // One lyric line's text plus its translation/pronunciation overlays, shared by
+    // the vertical (full scrolling list) and horizontal (two fixed slots)
+    // presentations so the overlay lookup is not duplicated.
+    const renderLineContent = (index: number) => {
+        if (!normalizedLyrics) {
+            return null;
+        }
+
+        const line = normalizedLyrics[index];
+        const startMs = getLyricLineStartMs(line);
+        const text = getLyricLineText(line);
+        const translationText = lyricsData.translationLyrics
+            ? findOverlayLineByTime(lyricsData.translationLyrics, startMs, index)
+            : undefined;
+        const pronunciationText = lyricsData.pronunciationLyrics
+            ? findOverlayLineByTime(lyricsData.pronunciationLyrics, startMs, index)
+            : undefined;
+
+        return (
+            <>
+                <div className="desktop-lyrics-line-main">{text.replaceAll('_BREAK_', '\n')}</div>
+                {pronunciationText || translationText ? (
+                    <div className="desktop-lyrics-line-side">
+                        {pronunciationText ? (
+                            <div className="desktop-lyrics-line-pronunciation">
+                                {pronunciationText}
+                            </div>
+                        ) : null}
+                        {translationText ? (
+                            <div className="desktop-lyrics-line-translation">{translationText}</div>
+                        ) : null}
+                    </div>
+                ) : null}
+            </>
+        );
+    };
+
+    // Horizontal presentation: two fixed slots (top/bottom) that alternate with
+    // the active line's parity. Even `activeIndex` → top = current (active, left),
+    // bottom = next (inactive, right). Odd `activeIndex` → top = previous
+    // (inactive, left), bottom = current (active, right). A missing neighbour
+    // (first/last line) leaves that slot empty — no stale or third line. There is
+    // no scrolling, lead time or `scrollIndex`; the highlight stays keyed to
+    // `activeIndex` only.
+    const horizontalSlot = useMemo(() => {
+        if (!normalizedLyrics || activeIndex < 0) {
+            return { bottomIndex: -1, topIndex: -1 };
+        }
+
+        const lastIndex = normalizedLyrics.length - 1;
+        const topIndex = activeIndex % 2 === 0 ? activeIndex : activeIndex - 1;
+        const bottomIndex = activeIndex % 2 === 0 ? activeIndex + 1 : activeIndex;
+
+        return {
+            bottomIndex: bottomIndex > lastIndex ? -1 : bottomIndex,
+            topIndex: topIndex > lastIndex ? -1 : topIndex,
+        };
+    }, [activeIndex, normalizedLyrics]);
+
+    const isHorizontal = layout === 'horizontal';
+    const hasLyrics = !!normalizedLyrics?.length;
+
     return (
         <div
-            className={`desktop-lyrics-root${locked ? ' desktop-lyrics-locked' : ''}`}
+            className={`desktop-lyrics-root${locked ? ' desktop-lyrics-locked' : ''}${
+                isHorizontal ? ' desktop-lyrics-horizontal' : ''
+            }`}
             onMouseLeave={handleMouseLeave}
             onMouseMove={handleMouseMove}
             style={rootStyle}
         >
-            <DesktopLyricsControlBar locked={locked} onLock={handleLock} onUnlock={handleUnlock} />
-            {normalizedLyrics?.length ? (
+            <DesktopLyricsControlBar
+                locked={locked}
+                onLock={handleLock}
+                onToggleSettings={() => setSettingsOpen((open) => !open)}
+                onUnlock={handleUnlock}
+                settingsOpen={settingsOpen}
+            />
+            {settingsOpen && !locked ? <DesktopLyricsSettingsPanel /> : null}
+            {!hasLyrics ? (
+                <div className="desktop-lyrics-empty">{t('page.fullscreenPlayer.noLyrics')}</div>
+            ) : isHorizontal ? (
+                activeIndex < 0 ? (
+                    <div className="desktop-lyrics-empty">
+                        {t('page.fullscreenPlayer.noLyrics')}
+                    </div>
+                ) : (
+                    <div className="desktop-lyrics-horizontal-slots">
+                        <div className="desktop-lyrics-slot desktop-lyrics-slot-top">
+                            {horizontalSlot.topIndex >= 0 ? (
+                                <div
+                                    className={`desktop-lyrics-line${
+                                        horizontalSlot.topIndex === activeIndex
+                                            ? ' desktop-lyrics-line-active'
+                                            : ''
+                                    }`}
+                                >
+                                    {renderLineContent(horizontalSlot.topIndex)}
+                                </div>
+                            ) : null}
+                        </div>
+                        <div className="desktop-lyrics-slot desktop-lyrics-slot-bottom">
+                            {horizontalSlot.bottomIndex >= 0 ? (
+                                <div
+                                    className={`desktop-lyrics-line${
+                                        horizontalSlot.bottomIndex === activeIndex
+                                            ? ' desktop-lyrics-line-active'
+                                            : ''
+                                    }`}
+                                >
+                                    {renderLineContent(horizontalSlot.bottomIndex)}
+                                </div>
+                            ) : null}
+                        </div>
+                    </div>
+                )
+            ) : (
                 <div className="desktop-lyrics-scroll" ref={scrollContainerRef}>
-                    {normalizedLyrics.map((line, index) => {
-                        const startMs = getLyricLineStartMs(line);
-                        const text = getLyricLineText(line);
+                    {normalizedLyrics.map((_, index) => {
                         const isActive = index === activeIndex;
-                        const translationText = lyricsData.translationLyrics
-                            ? findOverlayLineByTime(lyricsData.translationLyrics, startMs, index)
-                            : undefined;
-                        const pronunciationText = lyricsData.pronunciationLyrics
-                            ? findOverlayLineByTime(lyricsData.pronunciationLyrics, startMs, index)
-                            : undefined;
 
                         return (
                             <div
@@ -225,25 +329,11 @@ export const DesktopLyricsApp = () => {
                                 key={index}
                                 ref={index === scrollIndex ? scrollLineRef : undefined}
                             >
-                                <div className="desktop-lyrics-line-main">
-                                    {text.replaceAll('_BREAK_', '\n')}
-                                </div>
-                                {pronunciationText && (
-                                    <div className="desktop-lyrics-line-pronunciation">
-                                        {pronunciationText}
-                                    </div>
-                                )}
-                                {translationText && (
-                                    <div className="desktop-lyrics-line-translation">
-                                        {translationText}
-                                    </div>
-                                )}
+                                {renderLineContent(index)}
                             </div>
                         );
                     })}
                 </div>
-            ) : (
-                <div className="desktop-lyrics-empty">{t('page.fullscreenPlayer.noLyrics')}</div>
             )}
         </div>
     );

@@ -8,6 +8,8 @@ import {
     DesktopLyricsConfig,
     DesktopLyricsControlAction,
     DesktopLyricsData,
+    DesktopLyricsSettingField,
+    DesktopLyricsSettingValue,
     DesktopLyricsState,
     DesktopLyricsWindowState,
 } from '/@/shared/types/desktop-lyrics';
@@ -17,6 +19,7 @@ const DEFAULT_DESKTOP_LYRICS_CONFIG: DesktopLyricsConfig = {
     enabled: false,
     fontColor: '#ffffff',
     fontSize: 22,
+    layout: 'vertical',
     lineLeadTimeMs: 800,
 };
 
@@ -135,6 +138,23 @@ const sendToMainWindow = (channel: string) => {
     }
 
     mainWindow.webContents.send(channel);
+};
+
+// Relay a single in-window settings change from the desktop lyrics renderer to
+// the main window renderer, which owns the settings store and pushes the updated
+// config back through `desktop-lyrics-config`. The main process is a pure
+// relay here — it never interprets the field or mutates settings itself.
+const sendSettingsChangeToMainWindow = (
+    field: DesktopLyricsSettingField,
+    value: DesktopLyricsSettingValue,
+) => {
+    const mainWindow = getMainWindow();
+
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        return;
+    }
+
+    mainWindow.webContents.send('desktop-lyrics-settings-change', { field, value });
 };
 
 const DESKTOP_LYRICS_WIDTH = 720;
@@ -281,6 +301,9 @@ ipcMain.on('desktop-lyrics-control', (_event, action: DesktopLyricsControlAction
             break;
         case 'previous':
             sendToMainWindow('renderer-player-previous');
+            break;
+        case 'set-config':
+            sendSettingsChangeToMainWindow(action.field, action.value);
             break;
         case 'set-locked-hover':
             setHoverReveal(action.hovered);

@@ -4,6 +4,7 @@ import {
     DesktopLyricsConfig,
     DesktopLyricsControlAction,
     DesktopLyricsData,
+    DesktopLyricsSettingsChange,
     DesktopLyricsState,
     DesktopLyricsWindowState,
 } from '/@/shared/types/desktop-lyrics';
@@ -65,6 +66,14 @@ const onWindowState = (cb: (state: DesktopLyricsWindowState) => void) => {
     return () => ipcRenderer.removeListener('desktop-lyrics-window-state', listener);
 };
 
+const onSettingsChange = (cb: (change: DesktopLyricsSettingsChange) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, change: DesktopLyricsSettingsChange) =>
+        cb(change);
+    ipcRenderer.on('desktop-lyrics-settings-change', listener);
+
+    return () => ipcRenderer.removeListener('desktop-lyrics-settings-change', listener);
+};
+
 export const desktopLyrics = {
     close,
     control,
@@ -78,6 +87,7 @@ export const desktopLyrics = {
 export const desktopLyricsListener = {
     onConfig,
     onLyrics,
+    onSettingsChange,
     onState,
     onWindowState,
 };

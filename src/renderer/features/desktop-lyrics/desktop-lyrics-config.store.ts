@@ -4,13 +4,15 @@ import { DesktopLyricsConfig } from '/@/shared/types/desktop-lyrics';
 
 // Read-only mirror of the desktop lyrics configuration pushed by the main window
 // renderer (the settings authority) via the main process. Never persisted; only
-// `fontSize`, `fontColor` and `lineLeadTimeMs` drive this renderer's display
-// (`enabled`/`alwaysOnTop` are window-level concerns handled by the main process).
+// `fontSize`, `fontColor`, `layout` and `lineLeadTimeMs` drive this renderer's
+// display (`enabled`/`alwaysOnTop` are window-level concerns handled by the main
+// process).
 export const useDesktopLyricsConfigStore = create<DesktopLyricsConfig>(() => ({
     alwaysOnTop: true,
     enabled: false,
     fontColor: '#ffffff',
     fontSize: 22,
+    layout: 'vertical',
     lineLeadTimeMs: 800,
 }));
 

@@ -7,26 +7,32 @@ import { PlayerStatus, PlayerType } from '/@/shared/types/types';
 // store. `enabled` is the source of truth for open/close; `alwaysOnTop` is
 // applied by the main process at window creation and on change; `fontSize` and
 // `fontColor` are applied by the desktop lyrics renderer as CSS variables;
-// `lineLeadTimeMs` (desktop-lyrics-specific, independent of the main window
-// lyrics) drives the scroll-ahead target without advancing the highlight.
+// `layout` selects vertical (main above translation/pronunciation) vs horizontal
+// (side-by-side) line rendering; `lineLeadTimeMs` (desktop-lyrics-specific,
+// independent of the main window lyrics) drives the scroll-ahead target without
+// advancing the highlight.
 export interface DesktopLyricsConfig {
     alwaysOnTop: boolean;
     enabled: boolean;
     fontColor: string;
     fontSize: number;
+    layout: 'horizontal' | 'vertical';
     lineLeadTimeMs: number;
 }
 
 // Control intent sent by the desktop lyrics renderer's control bar. The main
 // process relays player controls to the main window's existing
 // `renderer-player-*` channels (handled by `useMainPlayerListener`) and handles
-// window-level actions (`lock`/`unlock`/`close`) locally. `set-locked-hover` is
-// a transient (non-authoritative) signal that temporarily restores mouse events
-// to a locked window while it is hovered so the unlock control can be clicked —
-// it never changes the authoritative `desktopLyricsLocked` flag. `seek` is
-// intentionally absent: click-to-seek is deferred and, when added, must route
-// through the main window's `mediaSeekToTimestamp` rather than `mpvPlayer.seekTo`.
+// window-level actions (`lock`/`unlock`/`close`) locally. `set-config` relays a
+// single in-window settings change to the main window renderer's settings store.
+// `set-locked-hover` is a transient (non-authoritative) signal that temporarily
+// restores mouse events to a locked window while it is hovered so the unlock
+// control can be clicked — it never changes the authoritative
+// `desktopLyricsLocked` flag. `seek` is intentionally absent: click-to-seek is
+// deferred and, when added, must route through the main window's
+// `mediaSeekToTimestamp` rather than `mpvPlayer.seekTo`.
 export type DesktopLyricsControlAction =
+    | { field: DesktopLyricsSettingField; type: 'set-config'; value: DesktopLyricsSettingValue }
     | { hovered: boolean; type: 'set-locked-hover' }
     | { type: 'close' }
     | { type: 'lock' }
@@ -34,7 +40,6 @@ export type DesktopLyricsControlAction =
     | { type: 'previous' }
     | { type: 'toggle-play' }
     | { type: 'unlock' };
-
 // Synchronized lyrics for the current song, resolved and normalized by the main
 // window renderer (the only place with server/settings/query context) and
 // forwarded to the desktop lyrics renderer. Reuses the existing
@@ -47,6 +52,21 @@ export interface DesktopLyricsData {
     pronunciationLyrics: SynchronizedLyrics | undefined;
     translationLyrics: SynchronizedLyrics | undefined;
 }
+
+// The settings fields the desktop lyrics renderer's in-window settings popover
+// can change. These are the only fields that round-trip from the read-only
+// mirror renderer back to the main window's settings store (the authority), via
+// the `set-config` control action below.
+export type DesktopLyricsSettingField = 'fontColor' | 'fontSize' | 'layout';
+
+// A single setting change relayed from the desktop lyrics renderer, through the
+// main process, to the main window renderer (which owns the settings store).
+export interface DesktopLyricsSettingsChange {
+    field: DesktopLyricsSettingField;
+    value: DesktopLyricsSettingValue;
+}
+
+export type DesktopLyricsSettingValue = number | string;
 
 // Minimal subset of `Song` (see domain-types.ts) that the desktop lyrics
 // renderer needs to display the current track. Deliberately excludes large or

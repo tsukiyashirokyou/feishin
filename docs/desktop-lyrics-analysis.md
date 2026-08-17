@@ -1501,3 +1501,185 @@ const onWindowState = (state: DesktopLyricsWindowState) => {
 9. resize 后 → 歌词重新定位逻辑不受影响（高度自适应滚动仍工作）。
 10. 控制栏 hover 与边框 hover 不互相破坏。
 - 上述均为**待人工复核**，未实际运行，不写 PASS。
+
+## Phase 6C-2 — 快捷入口 / 窗口内设置 / 歌词布局模式
+
+> 本轮新增三块：① Lyrics 页面的 Desktop Lyrics 快捷开关（位于右上角设置图标正下方，非底部控制栏）；② 桌面歌词控制栏上的设置按钮 + 窗口内轻量设置浮层（原生 HTML/CSS，不新开 BrowserWindow）；③ 歌词布局模式 `layout: 'vertical' | 'horizontal'`（只改歌词行内部视觉排布，不改时间轴/高亮/seek）。三者共用同一份 `lyrics.desktopLyrics` 持久化配置，双向同步，不新增第二套设置 store / 配置系统。
+
+### 需求与实现映射
+
+| 需求 | 实现 |
+| --- | --- |
+| ① Lyrics 页快捷开关 | `lyrics.tsx` 右上角 `Stack`（`pos="absolute" right={0} top={0}`）内，Settings 图标正下方新增 `ActionIcon`（`icon="appWindow"`），仅 `isElectron()` 时渲染，`aria-label`/tooltip 用 `desktopLyricsOpen`/`desktopLyricsClose`，`enabled` 时 primary 高亮。点击翻转 `enabled`（经 `setSettings`）。**未**新建底部控制栏、**未**复制原 Lyrics 控制栏、**未**在 Lyrics 页直接 new BrowserWindow。 |
+| ② 窗口内设置按钮 + 浮层 | 控制栏新增 settings 按钮（`RiSettingsLine`，位于 next 与 lock 之间）+ `DesktopLyricsSettingsPopover`。浮层为**原生 HTML/CSS**（`<input type="range">` / `<input type="color">` / 两段式 button segment），因为 desktop lyrics renderer **不挂 Mantine provider**。**未**新开 BrowserWindow。 |
+| ③ 窗口内 Font Size | popover 内 range（本地 draft state + `commitFontSize` 于 mouseUp/keyUp/touchEnd），发 `set-config { field:'fontSize' }`。 |
+| ④ 窗口内 Font Color | popover 内 `<input type="color">`；`toHexColor()` 将 store 的 `rgb(r,g,b)`（系统 ColorInput 产出）转为原生 color input 需要的 `#rrggbb`；发 `set-config { field:'fontColor' }`。 |
+| ⑤ 布局模式 | `layout: 'vertical' | 'horizontal'`（默认 `vertical`）。`vertical` = 主歌词在上、翻译/发音在下（原行为不变）；`horizontal` = 主歌词与翻译/发音并排。只改行内部视觉，不改时间轴/高亮。 |
+| ⑥ 系统设置与窗口内设置同源 | 两者都写同一 `lyrics.desktopLyrics`（`useSettingsStore` + `setSettings`），随主设置持久化。 |
+| ⑦ 双向同步 | 主窗口 → 桌面歌词：既有 `desktop-lyrics-config`（`layout` 随 config 下发）。桌面歌词 → 主窗口：新增 `set-config` control intent → main 纯中转 → 新通道 `desktop-lyrics-settings-change` → 主窗口 config bridge `setSettings` → 触发 config 下发回桌面歌词，闭环。 |
+| ⑧ 无第二套 store/config | 复用 `useSettingsStore` / `DesktopLyricsConfig`，**未**新增 store、**未**新建 `desktop-lyrics-layout/font/color` 等拆散 config IPC。 |
+
+### 双向同步闭环（窗口内设置写回路径）
+
+```
+桌面歌词 popover 交互
+  → window.api.desktopLyrics.control({ type:'set-config', field, value })
+  → main ipcMain.on('desktop-lyrics-control') 的 case 'set-config'（纯中转，不解释字段）
+  → mainWindow.webContents.send('desktop-lyrics-settings-change', { field, value })
+  → 主窗口 config bridge onSettingsChange：useSettingsStore.getState() 读当前全量 + ?? 回退 → setSettings({ ...base, <changedField> })
+  → config bridge effect 因字段变化触发 → sendConfig({ ..., <changedField> }) 下发给桌面歌词
+  → 桌面歌词 config store 更新 → UI 反映新字号/颜色/布局
+```
+
+- 单一通用 `set-config` 通道，字段由 `field` 判别联合区分（`fontColor`/`fontSize`/`layout`），满足「不新建拆散 config IPC」。
+- config bridge `onSettingsChange` 用 `useSettingsStore.getState()` **同步**读当前配置再拼 `base`，避免闭包陈旧覆盖其他字段（与 TS2739「`desktopLyrics` 为 `.optional()` 故 `setSettings` 需全量对象」一并处理）。
+
+### 修改文件清单
+
+**新增**
+
+| 文件 | 说明 |
+| --- | --- |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-settings-popover.tsx` | 原生 HTML/CSS 设置浮层（无 Mantine）。读 `useDesktopLyricsConfigStore` 的 `fontColor`/`fontSize`/`layout`，发 `set-config`。含 `toHexColor()`（`rgb()` → `#rrggbb`）、`fontSizeDraft`（useEffect 同步 + commit 事件）、两段式 layout segment。 |
+
+**修改**
+
+| 文件 | 说明 |
+| --- | --- |
+| `src/shared/types/desktop-lyrics.ts` | `DesktopLyricsConfig` 增 `layout`；新增 `DesktopLyricsSettingField`/`DesktopLyricsSettingValue`/`DesktopLyricsSettingsChange`；`DesktopLyricsControlAction` 增 `{ field, type:'set-config', value }`。 |
+| `src/renderer/store/settings.store.ts` | `DesktopLyricsSettingsSchema` 增 `layout: z.enum(['horizontal','vertical'])`；`initialState` 增 `layout:'vertical'`；`useDesktopLyricsSettings()` selector 增 `layout`（`?? 'vertical'`）。 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-config.store.ts` | 初始 state 增 `layout:'vertical'`。 |
+| `src/main/features/core/desktop-lyrics/index.ts` | `DEFAULT_DESKTOP_LYRICS_CONFIG` 增 `layout:'vertical'`；新增 `sendSettingsChangeToMainWindow()`；switch 增 `case 'set-config'`（在 `set-locked-hover` 之前，满足 sort-switch-case）。 |
+| `src/preload/desktop-lyrics.ts` | `desktopLyricsListener` 增 `onSettingsChange`（通道 `desktop-lyrics-settings-change`）。 |
+| `src/renderer/features/desktop-lyrics/use-desktop-lyrics-config-bridge.ts` | config 对象/effect deps/window-close 回写均含 `layout`；新增 `onSettingsChange` effect。 |
+| `src/renderer/features/lyrics/lyrics.tsx` | 右上角 `Stack` 内新增 Desktop Lyrics toggle `ActionIcon`（`appWindow`，仅 `isElectron()`）。 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-control-bar.tsx` | next 与 lock 之间新增 settings 按钮 + popover（`settingsOpen` state）。 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-app.tsx` | 读 `layout`；`horizontal` 时 root 加 `desktop-lyrics-horizontal`；翻译/发音包进 `desktop-lyrics-line-side`。 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics.css` | 新增 `.desktop-lyrics-line-side` / `.desktop-lyrics-horizontal .desktop-lyrics-line`（row）/ `.desktop-lyrics-horizontal .desktop-lyrics-line-side` / `.desktop-lyrics-settings` / `.desktop-lyrics-settings-popover` 及子样式 / `.desktop-lyrics-control-button-active` / segment 样式。 |
+| `src/renderer/features/settings/components/general/desktop-lyrics-settings.tsx` | FontColor 之后新增 Layout `SegmentedControl`（`updateSetting({ layout })`）。 |
+| `src/i18n/locales/en.json` / `zh-Hans.json` / `zh-Hant.json` | 新增 `desktopLyricsClose`/`desktopLyricsOpen`/`desktopLyricsLayout`/`desktopLyricsLayout_description`/`desktopLyricsLayoutHorizontal`/`desktopLyricsLayoutVertical`。 |
+
+### 新增 IPC
+
+| Channel | 方向 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `desktop-lyrics-settings-change` | main → 主窗口 renderer | send | 单一字段设置变更 `{ field, value }`（来自桌面歌词 popover 的 `set-config`，main 纯中转） |
+
+`desktop-lyrics-control` 新增 `set-config` 判别成员（不拆散成 `desktop-lyrics-layout`/`-font`/`-color` 等通道）。
+
+### 明确遵守的约束（本轮未触碰）
+
+- **未**新建底部控制栏 / 复制原 Lyrics 控制栏 / 在 Lyrics 页直接 new BrowserWindow。
+- **未**用 `defaultChecked`/独立 local state/独立 boolean cache 伪造状态——`enabled` 单一来源仍是 `lyrics.desktopLyrics.enabled`，桌面歌词只读镜像 + `set-config` 请求回写。
+- **未**新建第二 settings store / 第二套配置系统。
+- **未**新建拆散 config IPC。
+- **未**修改 `timestamp` / `getCurrentLyricIndex` / 高亮时间；**未**修改 `player.store.ts` / `timestamp.store.ts` / `lyrics-api.ts` / `lyrics-utils.ts` / `lyrics-animation-engine.ts` / `synchronized-lyrics.tsx` / `use-main-player-listener.tsx` / `mpv-player.ts`。
+- **未**新增依赖。
+
+### 自动化验证（已实际通过，本机 Windows）
+
+- `pnpm run typecheck`（node + web）✅
+- `pnpm run lint-code`（eslint `--max-warnings=0`）✅
+- `pnpm run lint-styles`（stylelint `--max-warnings=0`）✅
+- `pnpm run build:electron` ✅
+
+### 运行时验证（待人工复核，本环境未跑 dev 实例）
+
+1. Lyrics 页右上角 Settings 图标下方出现 Desktop Lyrics 开关；`enabled` 开/关时图标高亮与窗口开/关一致。
+2. 点击开关 → 桌面歌词窗口打开/关闭，与 Settings 页 Desktop Lyrics 开关双向一致。
+3. 桌面歌词控制栏出现设置按钮；点击弹出浮层（非新窗口）。
+4. 浮层内改 Font Size → 窗口歌词字号即时变化；System Settings 的 Font Size 同步更新。
+5. 浮层内改 Font Color → 窗口歌词颜色与 System Settings 的 Font Color 同步更新（含 `rgb()` → `#rrggbb` 转换正确、颜色选择器回显正确）。
+6. 浮层内切换 Layout → 窗口歌词行内排布在 vertical（上下）/ horizontal（并排）间切换；System Settings 的 Layout 同步更新。
+7. horizontal 模式下：有翻译/发音时并排显示；无翻译/发音时主歌词正常占满不换行错位。
+8. System Settings 改 Font Size / Font Color / Layout → 桌面歌词窗口同步反映。
+9. 无歌词（空状态）时，Font Size / Font Color 仍生效（回归 BUG-02）。
+10. 窗口内改设置后关闭窗口再开 → 设置持久化，不丢失、不重置为默认。
+11. 快歌/滚动/高亮不受 layout 切换影响（时间轴与高亮未改动）。
+12. `enabled` 状态无「defaultChecked/独立缓存」导致的 UI 与实际窗口状态失配。
+- 上述均为**待人工复核**，未实际运行，不写 PASS。
+
+## Phase 6C-2 Revision — Settings Popover / Horizontal Two-Line Slot Mode / Layout Toggle / i18n Audit
+
+> 本轮只处理 4 项：① Settings 不再遮挡歌词；② 重做 Horizontal 为「两个固定交替槽位」；③ Settings 旁新增 Vertical/Horizontal 快捷切换；④ i18n 审计。未新增 IPC / store / 依赖 / 第二套歌词系统，未改时间轴/高亮/`getCurrentLyricIndex`。
+
+### 需求 1：Settings 面板不再遮挡歌词（Popover → 内联 Panel）
+
+- 根因：6C-2 的 `.desktop-lyrics-settings-popover` 用 `position:absolute` 挂在 settings 按钮下方，展开即覆盖歌词区。
+- 修复：改为**内联（in-flow）面板**，结构 `root → control bar → settings panel → lyric area`。面板插入控制栏与歌词区之间，歌词区（vertical 滚动容器 / horizontal 槽位容器）随 `flex: 1` 自然压缩，不遮挡 current/next/horizontal 槽位。
+- `settingsOpen` 状态上提到 `DesktopLyricsApp`，控制栏经 `onToggleSettings`/`settingsOpen` props 驱动；`handleLock` 时重置 `settingsOpen`。
+- 组件/文件/类名 `Popover` → `Panel`（`desktop-lyrics-settings-panel.tsx` 取代 `-popover.tsx`，CSS 类 `.desktop-lyrics-settings-panel`）。
+- 小窗口可用：面板 `flex-shrink:1; min-height:0; overflow-y:auto; scrollbar-width:none`，过矮时面板内部隐藏滚动条滚动，不产生页面级滚动条。关闭后 `settingsOpen=false` 移除面板，布局恢复。
+- **未**靠 z-index / absolute overlay / 透明遮罩解决；**未**改变 drag/resize/lock/unlock/mouse-through/lineLeadTime/vertical scroll。
+
+### 需求 2：Horizontal 重新实现（两个固定交替槽位）
+
+- 弃用 6C-2 的「主歌词与翻译/发音左右并排」（`.desktop-lyrics-horizontal .desktop-lyrics-line { flex-direction: row }` 已删除）。
+- 新定义：**两个固定、上下排列的槽位**（`.desktop-lyrics-horizontal-slots` → `.desktop-lyrics-slot-top` / `-bottom`），随 `activeIndex` 奇偶交替，active 恒高亮，槽位内部文字左右错位。
+- 数据规则（复用 `normalizedLyrics` + `activeIndex`，无新歌词格式）：
+  - `activeIndex` 偶数：`top = lyrics[activeIndex]`（current/active/左对齐），`bottom = lyrics[activeIndex + 1]`（next/inactive/右对齐）。
+  - `activeIndex` 奇数：`top = lyrics[activeIndex - 1]`（previous/inactive/左对齐），`bottom = lyrics[activeIndex]`（current/active/右对齐）。
+  - `activeIndex < 0` → 复用现有 empty state（`t('page.fullscreenPlayer.noLyrics')`）。
+  - 末行/首行无相邻句时对应槽位留空（`bottomIndex`/`topIndex` 越界置 `-1`），不显示旧歌词或第三句。
+- 高亮唯一依据仍是 `activeIndex`（`.desktop-lyrics-line-active`），**未**提前高亮、**未**改 timestamp/`getCurrentLyricIndex`/阈值、**未**建第二时间轴。
+- **不滚动**：Horizontal 完全不用 `lineLeadTimeMs`/`scrollIndex`/`scrollIntoView`/`scrollTo`/`scrollTop`/scroll anchor。渲染分支在 horizontal 时根本不渲染 `.desktop-lyrics-scroll`，故 `scrollToAnchor` 因 ref 为空而早退。
+- translation/pronunciation 复用现有 `findOverlayLineByTime`（对应槽位行的附加内容，非第三句）。`renderLineContent(index)` 抽取为 vertical/horizontal 共用的行内容渲染，避免重复。
+- Vertical **完全不变**（完整列表 + `lineLeadTimeMs` + `scrollIndex` clamp + `scrollToAnchor` + 当前行高亮 + resize 自适应）。
+
+### 需求 3：Layout 快捷切换按钮
+
+- 控制栏顺序：Previous / Play-Pause / Next / **Settings** / **Layout Toggle** / Lock / Close（Layout Toggle 紧邻 Settings）。
+- 行为：`vertical → horizontal`、`horizontal → vertical`，直接切换、不打开 Settings。
+- 状态唯一来源：`useDesktopLyricsConfigStore().layout`；写回复用 `set-config { field:'layout', value }` → main → 主窗口 settings store → config bridge，**未**新增 layout store/IPC/localStorage/第二状态源。
+- 图标：`layout === 'vertical'` 用 `RiLayoutTop2Line`，`horizontal` 用 `RiLayoutLeft2Line`（均 react-icons/ri 现有图标）；带 `title` + `aria-label`（`setting.desktopLyricsLayoutToggle`）+ i18n。
+
+### 需求 4：i18n 审计
+
+- **修复硬编码英文**：`desktop-lyrics-settings.tsx`（系统设置）两处 `aria-label="Enable desktop lyrics"` / `"Always on top"` → `t('setting.desktopLyricsEnable')` / `t('setting.desktopLyricsAlwaysOnTop')`。
+- **新增 key**（en/zh-Hans/zh-Hant）：`desktopLyricsSettings`（Settings/设置/設定）、`desktopLyricsLayoutToggle`（Toggle layout/切换布局/切換佈局）。
+- **更新 key**：`desktopLyricsLayout_description` 描述新语义（vertical=完整滚动列表；horizontal=两个交替槽位），三语言同步。
+- 其余 6C-1/6C-2 用户可见文本已复核为 i18n（`desktop-lyrics-app.tsx` 空状态、控制栏、面板 title/label、`lyrics.tsx` 快捷开关）——无遗漏硬编码中文/英文。注释与外部歌词文本未改动。
+
+### Revision 修改文件清单
+
+| 文件 | 修改 |
+| --- | --- |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-settings-panel.tsx` | 新增（取代 `-popover.tsx`，内联面板） |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-settings-popover.tsx` | 删除 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-app.tsx` | `settingsOpen` 上提；渲染 `DesktopLyricsSettingsPanel` 内联；`renderLineContent` 抽取；`horizontalSlot` 两槽位奇偶计算；horizontal 分支不渲染滚动容器 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-control-bar.tsx` | 移除内嵌 popover；新增 Settings + Layout Toggle 按钮（icon/title/aria-label/i18n） |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics.css` | 删除旧 `.desktop-lyrics-settings`/`-popover`/horizontal row 规则；新增 `.desktop-lyrics-settings-panel`（内联）+ `.desktop-lyrics-horizontal-slots`/`.desktop-lyrics-slot-top`/`-bottom` + 槽位左右对齐 |
+| `src/renderer/features/settings/components/general/desktop-lyrics-settings.tsx` | 两处硬编码 `aria-label` → i18n |
+| `src/i18n/locales/en.json` / `zh-Hans.json` / `zh-Hant.json` | 新增 `desktopLyricsSettings`、`desktopLyricsLayoutToggle`；更新 `desktopLyricsLayout_description` |
+
+### Revision 自动化验证（已实际通过，本机 Windows）
+
+- `pnpm run typecheck`（node + web）✅
+- `pnpm run lint-code`（eslint `--max-warnings=0`）✅
+- `pnpm run lint-styles`（stylelint `--max-warnings=0`）✅
+- `pnpm run build:electron` ✅
+
+### Revision 运行时验证（待人工复核，本环境未跑 dev 实例）
+
+**Settings**
+1. Settings 打开后不覆盖 current / next / horizontal 两槽位歌词。
+2. 小窗口（min 480×140）打开 Settings 可用、无页面级滚动条。
+3. 关闭 Settings 后布局恢复。
+
+**Horizontal**
+4. `activeIndex=0`：上 = current/active/左对齐，下 = next/inactive/右对齐。
+5. `activeIndex=1`：上 = previous/inactive/左对齐，下 = current/active/右对齐。
+6. `activeIndex=2`：恢复 active 在上、next 在下。
+7. 连续播放 0→1→2→3→4 始终按奇偶规则交替；两句始终上下排列。
+8. 无列表滚动、不显示第三句、不提前高亮、末行不越界、translation/pronunciation 不变成额外时间轴。
+
+**Layout Toggle**
+9. Settings 改 layout 立即生效；Layout Toggle 改立即生效；两者状态一致；重启后保持。
+
+**i18n**
+10. English / 简体中文 / 繁體中文 下本阶段 UI 文本（Settings/Layout Toggle/Layout 描述/空状态）全部正确本地化。
+
+**Regression（6C-1 无回归）**
+11. resize / hover border / fontColor border / lock-unlock / mouse-through / alwaysOnTop / multi-monitor / vertical lineLeadTime / vertical scroll / control bar 均正常。
+
+- 上述均为**待人工复核**，未实际运行，不写 PASS。

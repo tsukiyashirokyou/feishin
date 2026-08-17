@@ -10,6 +10,7 @@ import { useDesktopLyricsSettings, useSettingsStoreActions } from '/@/renderer/s
 import { Button } from '/@/shared/components/button/button';
 import { ColorInput } from '/@/shared/components/color-input/color-input';
 import { NumberInput } from '/@/shared/components/number-input/number-input';
+import { SegmentedControl } from '/@/shared/components/segmented-control/segmented-control';
 import { Slider } from '/@/shared/components/slider/slider';
 import { Switch } from '/@/shared/components/switch/switch';
 
@@ -37,7 +38,7 @@ export const DesktopLyricsSettings = memo(() => {
         {
             control: (
                 <Switch
-                    aria-label="Enable desktop lyrics"
+                    aria-label={t('setting.desktopLyricsEnable')}
                     checked={settings.enabled}
                     onChange={(e) => updateSetting({ enabled: e.currentTarget.checked })}
                 />
@@ -100,6 +101,33 @@ export const DesktopLyricsSettings = memo(() => {
         },
         {
             control: (
+                <SegmentedControl
+                    data={[
+                        {
+                            label: t('setting.desktopLyricsLayoutVertical'),
+                            value: 'vertical',
+                        },
+                        {
+                            label: t('setting.desktopLyricsLayoutHorizontal'),
+                            value: 'horizontal',
+                        },
+                    ]}
+                    onChange={(value) =>
+                        updateSetting({ layout: value as 'horizontal' | 'vertical' })
+                    }
+                    size="sm"
+                    value={settings.layout}
+                    w="100%"
+                />
+            ),
+            description: t('setting.desktopLyricsLayout', {
+                context: 'description',
+            }),
+            isHidden: !isElectron(),
+            title: t('setting.desktopLyricsLayout'),
+        },
+        {
+            control: (
                 <NumberInput
                     defaultValue={settings.lineLeadTimeMs}
                     max={1000}
@@ -121,7 +149,7 @@ export const DesktopLyricsSettings = memo(() => {
         {
             control: (
                 <Switch
-                    aria-label="Always on top"
+                    aria-label={t('setting.desktopLyricsAlwaysOnTop')}
                     defaultChecked={settings.alwaysOnTop}
                     onChange={(e) => updateSetting({ alwaysOnTop: e.currentTarget.checked })}
                 />
