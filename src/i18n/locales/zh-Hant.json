@@ -842,6 +842,8 @@
         "desktopLyricsFontColor_description": "目前高亮歌詞行的顏色",
         "desktopLyricsFontSize": "字體大小",
         "desktopLyricsFontSize_description": "桌面歌詞文字的大小",
+        "desktopLyricsLineLeadTime": "歌詞提前顯示時間 (ms)",
+        "desktopLyricsLineLeadTime_description": "桌面歌詞提前多久將下一行捲動到中間位置。獨立於主視窗歌詞。",
         "desktopLyricsUnlock": "解鎖",
         "desktopLyricsUnlock_description": "解鎖桌面歌詞視窗，使其可以互動",
         "autosave": "自動儲存播放佇列",

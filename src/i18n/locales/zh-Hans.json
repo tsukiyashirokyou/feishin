@@ -598,6 +598,8 @@
         "desktopLyricsFontColor_description": "当前高亮歌词行的颜色",
         "desktopLyricsFontSize": "字体大小",
         "desktopLyricsFontSize_description": "桌面歌词文字的大小",
+        "desktopLyricsLineLeadTime": "歌词提前显示时间 (ms)",
+        "desktopLyricsLineLeadTime_description": "桌面歌词提前多久将下一行滚动到中间位置。独立于主窗口歌词。",
         "desktopLyricsUnlock": "解锁",
         "desktopLyricsUnlock_description": "解锁桌面歌词窗口，使其可以交互",
         "autosave": "自动保存播放队列",

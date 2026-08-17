@@ -9,6 +9,7 @@ import {
 import { useDesktopLyricsSettings, useSettingsStoreActions } from '/@/renderer/store';
 import { Button } from '/@/shared/components/button/button';
 import { ColorInput } from '/@/shared/components/color-input/color-input';
+import { NumberInput } from '/@/shared/components/number-input/number-input';
 import { Slider } from '/@/shared/components/slider/slider';
 import { Switch } from '/@/shared/components/switch/switch';
 
@@ -96,6 +97,26 @@ export const DesktopLyricsSettings = memo(() => {
             }),
             isHidden: !isElectron(),
             title: t('setting.desktopLyricsFontColor'),
+        },
+        {
+            control: (
+                <NumberInput
+                    defaultValue={settings.lineLeadTimeMs}
+                    max={1000}
+                    min={0}
+                    onBlur={(e) => {
+                        const value = Number(e.currentTarget.value);
+                        updateSetting({ lineLeadTimeMs: value });
+                    }}
+                    step={50}
+                    width={100}
+                />
+            ),
+            description: t('setting.desktopLyricsLineLeadTime', {
+                context: 'description',
+            }),
+            isHidden: !isElectron(),
+            title: t('setting.desktopLyricsLineLeadTime'),
         },
         {
             control: (

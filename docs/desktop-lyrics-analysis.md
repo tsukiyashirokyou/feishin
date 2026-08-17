@@ -1342,3 +1342,162 @@ const onWindowState = (state: DesktopLyricsWindowState) => {
 - 需求 4：hover 时控制栏出现在歌词**上方**，不遮挡当前行；非 hover 时弱化/隐藏。
 - 需求 5：主窗口在副屏时，桌面歌词默认开在该副屏上方中央；主窗口在主板屏时开在主板屏上方中央。
 - 上述均为**待人工复核**，未实际运行，不写 PASS。
+
+---
+
+## Phase 6C-1 Revision — 独立提前滚动时间 / resize 边界 / 高度自适应滚动
+
+> 本轮基于人工验收反馈，在 Phase 6C-1 范围内修正三个 UX 问题，**不进入 6C-2**。约束沿用：不改原 Lyrics 逻辑（`lineLeadTimeMs`、scroll candidate、active/highlight timing）、不改 timestamp/`getCurrentLyricIndex`、不给 `activeIndex` 加补偿、不提前高亮、不改主窗口 Lyrics、不新建 settings store / window-state 系统。
+
+### 问题 1：桌面歌词独立的 `lineLeadTimeMs`（提前滚动 ≠ 提前高亮，且独立于原歌词）
+
+**现象**：桌面歌词直接复用 `lyrics.lineLeadTimeMs`（默认 800ms）。提前滚动逻辑本身正确（下一行先滚到中间、高亮仍在精确时刻），但对快歌（行间隔短）800ms 过于激进，导致当前行被滚出视口。
+
+**方案**：桌面歌词拥有**独立**的 `lyrics.desktopLyrics.lineLeadTimeMs`（默认仍 800ms，与原值一致；可调范围 0–1000ms，step 50）。`scrollLeadTime = desktopLyrics.lineLeadTimeMs`（桌面）与 `scrollLeadTime = lyrics.lineLeadTimeMs`（原 Lyrics）互不覆盖。高亮逻辑不变（滚动时机 ≠ 高亮时机）。
+
+**改动**：
+- `settings.store.ts`：`DesktopLyricsSettingsSchema` 加 `lineLeadTimeMs: z.number()`；默认 `desktopLyrics` 加 `lineLeadTimeMs: 800`；`useDesktopLyricsSettings()` 归一化加 `lineLeadTimeMs: desktopLyrics?.lineLeadTimeMs ?? 800`。
+- `use-desktop-lyrics-config-bridge.ts`：`lineLeadTimeMs` 改从 `useDesktopLyricsSettings()` 读（移除 `useLyricsSettings` 导入）；窗口关闭回写对象补 `lineLeadTimeMs`。
+- `desktop-lyrics-settings.tsx`：新增 `NumberInput`（`min=0`、`max=1000`、`step=50`、`defaultValue=settings.lineLeadTimeMs`、`onBlur` 提交）SettingOption，复用 `updateSetting` 写入 `lyrics.desktopLyrics`。
+- i18n（en/zh-Hans/zh-Hant）：新增 `desktopLyricsLineLeadTime` + `_description`。
+- `desktop-lyrics.ts`：更新 `DesktopLyricsConfig` 注释（桌面专属、独立于主窗口）。
+
+**范围选择依据**：现有原 Lyrics `lineLeadTimeMs` 为 `NumberInput min=0 max=3000 step=50`（`lyrics-settings-form.tsx`）。桌面歌词为小悬浮窗，>1s 的提前滚动无意义且会放大小节「问题 3」，故选 **0–1000ms**（step 50，含默认 800）。
+
+### 问题 2：resize 时显示临时边界
+
+**现象**：透明窗口 resize 时无可见边界，用户找不到边缘。
+
+**Electron 事件调查**：`BrowserWindow` 有 `resize`（resize 过程中持续触发）与 `resized`（resize 结束触发一次，仅 macOS/Windows）。精确方案需 main 监听 → 新增 IPC → renderer 接收，侵入较大。**renderer DOM `window.resize`** 在拖拽改变视口尺寸时同样可靠触发，故采用 renderer-only + debounce，零 IPC/preload/main 改动。
+
+**方案**：`window.addEventListener('resize')` + 250ms debounce 近似「resize 已结束」：尺寸持续变化时保持 `isResizing=true`，停止约 250ms 后置 false。首次尺寸在 mount 时记录，避免加载时闪烁。`isResizing` 时给 root 加 `desktop-lyrics-resizing` 类 → `box-shadow: inset 0 0 0 2px rgb(255 255 255 / 45%)`（inset 阴影，不影响布局/尺寸、不改变换行/控制栏位置）。
+
+**改动**：
+- `desktop-lyrics-app.tsx`：新增 `isResizing` state + resize 监听 effect（含 lastSize 守卫 + debounce）。
+- `desktop-lyrics.css`：`.desktop-lyrics-root.desktop-lyrics-resizing { box-shadow: inset 0 0 0 2px rgb(255 255 255 / 45%) }`。
+
+### 问题 3：高度自适应滚动 + 快歌不跳行（方案 A/B 比较）
+
+**现象**：窗口被拉得很高后，当前行被推到顶部/裁切、下一行贴顶、下方堆积大量歌词，观感不协调，快歌尤其明显。
+
+**方案 A/B 比较**：
+
+| 维度 | A：保留完整歌词，滚动目标高度自适应 | B：只显示当前句 + 下一句 |
+| --- | --- | --- |
+| UX | 保留上下文（前后歌词可见），与主窗口 Lyrics 一致 | 丢失上下文，窗口很空，与现有观感割裂 |
+| 与主窗口 Lyrics 一致性 | 一致（都是完整歌词 + 滚动定位） | 不一致 |
+| 代码复杂度 | 滚动目标改高度感知 + 快歌 clamp，中等 | 渲染层按 `activeIndex` 过滤，简单但砍内容 |
+| 滚动逻辑 | 需重新设计滚动目标（manual `scrollTo`） | 几乎无滚动（仅两行） |
+| 高度适应 | 好：任意高度下目标都落在合理位置 | 天然适应（仅两行），但空 |
+| 上下文丢失 | 无 | 严重 |
+| PR 接受度 | 符合「保留完整歌词」的产品意图 | 更像临时砍功能 |
+
+**选择：方案 A**。理由：保留完整歌词与主窗口 Lyrics 一致、上下文不丢、用户倾向 A；其「稳定性」通过「高度感知滚动目标 + 快歌 clamp」两个确定性规则解决，无需砍内容。
+
+**方案 A 实现**：
+1. **快歌 clamp**：`scrollIndex = min(getCurrentLyricIndex(t + offset + lineLeadTimeMs), activeIndex + 1)`。滚动目标最多超前高亮行 1 行，杜绝 800ms 提前把多行之后的内容滚进来、把当前行顶出视口。（高亮 `activeIndex` 仍精确不变。）
+2. **高度感知滚动目标**：弃用 `scrollIntoView({block:'center'})`，改为 `container.scrollTo({top: lineCenter - SCROLL_ANCHOR_FRACTION * clientHeight})`，其中 `lineCenter = line.offsetTop + line.offsetHeight/2`、`SCROLL_ANCHOR_FRACTION = 0.5`（居中）。`offsetTop` 以 `.desktop-lyrics-scroll`（`position: relative`）为参照，故任意窗口高度下目标都稳定落在容器 50% 处；高窗口不顶顶、矮窗口当前行仍可见。
+3. **resize 后重定位**：浏览器在 resize 期间保持 `scrollTop`，导致锚点漂移。scroll effect 依赖 `[isResizing, scrollIndex]`，`isResizing` 期间跳过（不与用户拖拽抢滚动），结束后重新 `scrollToAnchor()`。
+
+**改动**：
+- `desktop-lyrics-app.tsx`：`SCROLL_ANCHOR_FRACTION` 常量；`scrollIndex` clamp；`scrollContainerRef` + `scrollToAnchor`（manual scroll）；scroll effect 依赖加 `isResizing`。
+- `desktop-lyrics.css`：`.desktop-lyrics-scroll` 加 `position: relative`（作为 `offsetTop` 参照，不影响布局）。
+
+### 明确未改 / 禁止触碰（本轮遵守）
+
+- 未改：原 Lyrics 的 `lineLeadTimeMs` / scroll candidate / active / highlight timing；`getCurrentLyricIndex`；timestamp/IPC；`lyrics-utils.ts` 等主窗口 Lyrics 相关文件。
+- 未加：`activeIndex` 时间补偿、提前高亮。
+- 未做：6C-2（歌词页快捷开关 / Desktop Lyrics 内 Settings 按钮 / Font Size、Color 快捷设置 / 上下左右歌词布局 / 新 Settings 页 / seek / 新 player / PR cleanup）。
+
+### Revision 修改文件清单
+
+| 文件 | 修改 | 问题 |
+| --- | --- | --- |
+| `src/renderer/store/settings.store.ts` | schema/默认/`useDesktopLyricsSettings` 加 `lineLeadTimeMs` | 1 |
+| `src/renderer/features/desktop-lyrics/use-desktop-lyrics-config-bridge.ts` | `lineLeadTimeMs` 改读 `useDesktopLyricsSettings`；回写补字段 | 1 |
+| `src/renderer/features/settings/components/general/desktop-lyrics-settings.tsx` | 新增 `NumberInput`（提前滚动时间） | 1 |
+| `src/i18n/locales/{en,zh-Hans,zh-Hant}.json` | 新增 `desktopLyricsLineLeadTime`/`_description` | 1 |
+| `src/shared/types/desktop-lyrics.ts` | `DesktopLyricsConfig` 注释更新 | 1 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-app.tsx` | `isResizing` + resize 监听；`scrollIndex` clamp；`scrollToAnchor` 高度感知滚动 + 重定位 | 2、3 |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics.css` | resize 边界 `box-shadow`；`.desktop-lyrics-scroll` `position: relative` | 2、3 |
+
+### Revision 自动化验证（已实际通过，本机 Windows）
+
+- `pnpm run typecheck`（node + web）✅
+- `pnpm run lint-code`（eslint `--max-warnings=0`）✅
+- `pnpm run lint-styles`（stylelint `--max-warnings=0`）✅
+- `pnpm run build:electron` ✅（49.41s）
+
+### Revision 运行时验证（待人工复核，本环境未跑 dev 实例）
+
+- 问题 1：设置里把桌面歌词「提前滚动时间」从 800 改到 300 → 桌面歌词下一行提前约 300ms 滚到中间；主窗口 Lyrics 的提前滚动（若其 `lineLeadTimeMs` 仍 800）**不受影响**；二者互不覆盖。恢复 800 后行为如初。
+- 问题 2：拖拽窗口边缘 resize → 出现 2px 半透明白色内边框；停止拖拽约 250ms 后边框消失；resize 过程中歌词换行/控制栏位置/窗口尺寸**不变**；正常状态下**无**边框；加载瞬间**无**边框闪烁。
+- 问题 3：分别把窗口拉到 min（140 高）/默认（200）/2×（400）/更高 → 当前行**不**被裁切、下一行在合理位置、顶部无堆叠；自动滚动正常。快歌（行间隔 <800ms）：滚动目标最多超前 1 行，**无**多行跳滚、当前行始终可见、高亮**不**被提前。
+- 上述均为**待人工复核**，未实际运行，不写 PASS。
+
+---
+
+## Phase 6C-1 Revision 2 — 边界提示 UX（颜色跟随 / 可见度 / hover 驱动）
+
+> 本轮只改「窗口边界提示」的显示效果与时机，不进入 6C-2、不新增其他功能。上一轮 Revision 的 resize 边界已通过人工验证，但固定白色 45% alpha 在浅色背景下不可见、且由 `isResizing` 驱动，现改为「跟随字体颜色 + hover 驱动 + locked 不显示」。
+
+### 需求 1：边框颜色跟随 Desktop Lyrics 字体颜色
+
+- 复用既有 CSS variable `--desktop-lyrics-font-color`（由 `desktop-lyrics-app.tsx` 的 `rootStyle` 内联设置在 `.desktop-lyrics-root` 上，来自 `fontColor` config）。不新增颜色设置 / store / config IPC，不改 Font Color 数据流。修改 Font Color 后边框自动跟随。
+
+### 需求 2：边框可见度调整
+
+- 原 `inset 0 0 0 2px rgb(255 255 255 / 45%)` 在浅色/白色背景下几乎不可见。
+- 改为双层 inset 阴影：主边框 2px `var(--desktop-lyrics-font-color)` + 内侧 1px `rgb(0 0 0 / 50%)` 深色描边（对照歌词正文 `text-shadow: 0 1px 3px rgb(0 0 0 / 60%)` 的既有对比手法）。
+  - 深色背景：亮色主边框可见，深色描边自然融合（不过亮）。
+  - 浅色/白色背景：主边框与背景同色时，内侧深色描边提供对比，边界仍可见。
+- 未使用粗边框、未加实体背景、未加大块半透明背景、未改窗口尺寸、不影响歌词布局。
+
+### 需求 3：边框显示时机改为「未锁定 + 鼠标悬停」
+
+- 弃用 `isResizing` 作为边框显示条件。
+- 新语义 = **CSS `:hover` + `:not(.desktop-lyrics-locked)`**：未锁定 + 鼠标悬停 → 显示边界；鼠标移出 → 隐藏；锁定 → 永不显示。纯 CSS，无需新增 React hover 状态。
+- root className 由 `desktop-lyrics-resizing`（`isResizing` 驱动）改为 `desktop-lyrics-locked`（`locked` 驱动）。
+
+### 需求 4：resize 期间自然保持边界 + 旧 resize 状态处置
+
+- 未锁定 + 鼠标在窗口内 + 正在 resize → 本就满足 `:hover`，边界自然保持，无需 `isResizing` 参与。
+- **保留** `isResizing` state / resize listener / 250ms debounce：它们仍用于**高度自适应滚动的 resize 后重定位**（scroll effect `if (isResizing) return` + 依赖 `[isResizing, scrollIndex, scrollToAnchor]`），删除会破坏该功能。
+- **删除** `desktop-lyrics-resizing` 类（app className）与对应 CSS 规则——它们只用于边框显示，已无其他用途。
+- 结论：`isResizing` 仅与「滚动重定位」绑定，不再与「边框显示」绑定。
+
+### 需求 5：与 Lock 状态正确组合
+
+- 复用现有 `locked`（经 `desktop-lyrics-window-state` 回传的镜像）。`locked=true` → root 加 `desktop-lyrics-locked` → `:not(...)` 阻止边框；`locked=false` → 边框由 `:hover` 决定。
+- 未新建 `desktop-lyrics-border-state` 之类的新状态；未新增 IPC/store/设置项。
+- hover-reveal 解锁（locked 时临时 `set-locked-hover`）不改变权威 `locked`，故 locked 时即便 hover 也不显示边框。
+
+### Revision 2 修改文件清单
+
+| 文件 | 修改 |
+| --- | --- |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics-app.tsx` | root className 改 `desktop-lyrics-locked`（移除 `desktop-lyrics-resizing`）；resize 监听注释更新（仅用于滚动重定位） |
+| `src/renderer/features/desktop-lyrics/desktop-lyrics.css` | 删除 `.desktop-lyrics-root.desktop-lyrics-resizing` 规则；新增 `.desktop-lyrics-root:hover:not(.desktop-lyrics-locked)` 双层 inset 阴影（fontColor + 深色描边） |
+
+**未修改**：`desktop-lyrics-config.store.ts`、settings/`useDesktopLyricsSettings`、config IPC、Font Color 数据流、控制栏 hover 逻辑、滚动/重定位逻辑。`isResizing` state / resize listener / debounce **保留**（服务于滚动重定位）。
+
+### Revision 2 自动化验证（已实际通过，本机 Windows）
+
+- `pnpm run typecheck`（node + web）✅
+- `pnpm run lint-code`（eslint `--max-warnings=0`）✅
+- `pnpm run lint-styles`（stylelint `--max-warnings=0`）✅
+- `pnpm run build:electron` ✅（49.23s）
+
+### Revision 2 运行时验证（待人工复核，本环境未跑 dev 实例）
+
+1. 未锁定 + 鼠标进入窗口 → 边框出现。
+2. 未锁定 + 鼠标离开 → 边框消失。
+3. Lock 后 → 边框消失（且不因 hover 强制改变锁定状态）。
+4. Unlock 后 → 再次 hover 可显示边框。
+5. 修改 Font Color → 边框颜色跟随新颜色。
+6. 白色/浅色背景 → 边框仍明显（内侧深色描边提供对比）。
+7. 深色背景 → 边框不过亮。
+8. resize 时 → 边框自然保持显示。
+9. resize 后 → 歌词重新定位逻辑不受影响（高度自适应滚动仍工作）。
+10. 控制栏 hover 与边框 hover 不互相破坏。
+- 上述均为**待人工复核**，未实际运行，不写 PASS。

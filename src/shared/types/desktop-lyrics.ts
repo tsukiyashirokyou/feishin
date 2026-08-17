@@ -7,8 +7,8 @@ import { PlayerStatus, PlayerType } from '/@/shared/types/types';
 // store. `enabled` is the source of truth for open/close; `alwaysOnTop` is
 // applied by the main process at window creation and on change; `fontSize` and
 // `fontColor` are applied by the desktop lyrics renderer as CSS variables;
-// `lineLeadTimeMs` (from the shared lyrics settings) drives the scroll-ahead
-// target without advancing the highlight.
+// `lineLeadTimeMs` (desktop-lyrics-specific, independent of the main window
+// lyrics) drives the scroll-ahead target without advancing the highlight.
 export interface DesktopLyricsConfig {
     alwaysOnTop: boolean;
     enabled: boolean;

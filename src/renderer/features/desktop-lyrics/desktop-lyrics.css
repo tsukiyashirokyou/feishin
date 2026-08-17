@@ -20,7 +20,17 @@ body {
     -webkit-app-region: drag;
 }
 
+/* Unlocked + hovered: show a window boundary that follows the font color. The
+   subtle dark inner edge keeps it visible on light/white backgrounds (mirroring
+   the lyrics text shadow), while the font color keeps it prominent on dark ones. */
+.desktop-lyrics-root:hover:not(.desktop-lyrics-locked) {
+    box-shadow:
+        inset 0 0 0 2px var(--desktop-lyrics-font-color, #fff),
+        inset 0 0 0 3px rgb(0 0 0 / 50%);
+}
+
 .desktop-lyrics-scroll {
+    position: relative;
     display: flex;
     flex: 1;
     flex-direction: column;

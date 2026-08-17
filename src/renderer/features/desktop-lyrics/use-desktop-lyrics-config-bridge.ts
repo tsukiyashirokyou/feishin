@@ -1,11 +1,7 @@
 import isElectron from 'is-electron';
 import { useEffect } from 'react';
 
-import {
-    useDesktopLyricsSettings,
-    useLyricsSettings,
-    useSettingsStoreActions,
-} from '/@/renderer/store';
+import { useDesktopLyricsSettings, useSettingsStoreActions } from '/@/renderer/store';
 import { DesktopLyricsConfig, DesktopLyricsWindowState } from '/@/shared/types/desktop-lyrics';
 
 // Bridges desktop lyrics settings from the main window renderer (the settings
@@ -13,10 +9,10 @@ import { DesktopLyricsConfig, DesktopLyricsWindowState } from '/@/shared/types/d
 // sent, on mount (so `enabled` can auto-open on startup) and whenever any of
 // them change. The main process reconciles open/close from `enabled` and applies
 // `alwaysOnTop`; the desktop lyrics renderer applies `fontSize`/`fontColor` and
-// uses `lineLeadTimeMs` (from the shared lyrics settings) for its scroll-ahead.
+// uses the desktop-lyrics-specific `lineLeadTimeMs` for its scroll-ahead.
 export const useDesktopLyricsConfigBridge = () => {
-    const { alwaysOnTop, enabled, fontColor, fontSize } = useDesktopLyricsSettings();
-    const { lineLeadTimeMs } = useLyricsSettings();
+    const { alwaysOnTop, enabled, fontColor, fontSize, lineLeadTimeMs } =
+        useDesktopLyricsSettings();
     const { setSettings } = useSettingsStoreActions();
 
     useEffect(() => {
@@ -61,6 +57,7 @@ export const useDesktopLyricsConfigBridge = () => {
                         enabled: false,
                         fontColor,
                         fontSize,
+                        lineLeadTimeMs,
                     },
                 },
             });
@@ -72,5 +69,5 @@ export const useDesktopLyricsConfigBridge = () => {
         return () => {
             removeWindowStateListener();
         };
-    }, [alwaysOnTop, enabled, fontColor, fontSize, setSettings]);
+    }, [alwaysOnTop, enabled, fontColor, fontSize, lineLeadTimeMs, setSettings]);
 };

@@ -841,6 +841,8 @@
         "desktopLyricsFontColor_description": "Color of the currently highlighted lyric line",
         "desktopLyricsFontSize": "Font size",
         "desktopLyricsFontSize_description": "Size of the desktop lyrics text",
+        "desktopLyricsLineLeadTime": "Line lead time (ms)",
+        "desktopLyricsLineLeadTime_description": "How early the desktop lyrics scrolls the next line toward the center before it is sung. Independent from the main window lyrics.",
         "desktopLyricsUnlock": "Unlock",
         "desktopLyricsUnlock_description": "Unlock the desktop lyrics window so it can be interacted with",
         "autosave": "Automatically save play queue",

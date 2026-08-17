@@ -613,6 +613,7 @@ const DesktopLyricsSettingsSchema = z.object({
     enabled: z.boolean(),
     fontColor: z.string(),
     fontSize: z.number(),
+    lineLeadTimeMs: z.number(),
 });
 
 const LyricsDisplaySettingsSchema = z.object({
@@ -2007,6 +2008,7 @@ const initialState: SettingsState = {
             enabled: false,
             fontColor: '#ffffff',
             fontSize: 22,
+            lineLeadTimeMs: 800,
         },
         enableAutoTranslation: false,
         enableFurigana: false,
@@ -2949,6 +2951,7 @@ export const useDesktopLyricsSettings = () =>
             enabled: desktopLyrics?.enabled ?? false,
             fontColor: desktopLyrics?.fontColor ?? '#ffffff',
             fontSize: desktopLyrics?.fontSize ?? 22,
+            lineLeadTimeMs: desktopLyrics?.lineLeadTimeMs ?? 800,
         };
     }, shallow);
 
